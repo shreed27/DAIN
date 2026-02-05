@@ -111,3 +111,42 @@ Key differences:
 The user never touches low-level complexity.
 
 ---
+
+
+┌──────────────────────────────┐
+│            USER              │
+│  "swap SOL to USDC safely"   │
+└──────────────┬───────────────┘
+               ▼
+┌──────────────────────────────┐
+│           UI LAYER            │
+│  Intent Console + Live Logs   │
+└──────────────┬───────────────┘
+               ▼
+┌──────────────────────────────┐
+│        SUPERROUTER            │
+│  (Intent Parsing & Planning) │
+└──────────────┬───────────────┘
+               ▼
+┌──────────────────────────────┐
+│        CLAWDNET MESH          │
+│   (Agent Coordination)       │
+└──────────────┬───────────────┘
+      ┌────────┼──────────┐
+      ▼        ▼          ▼
+┌──────────┐ ┌──────────┐ ┌──────────┐
+│ OSINT    │ │ DEX       │ │ RISK     │
+│ MARKET   │ │ AGENT     │ │ AGENT    │
+│ (signals)│ │ (routing) │ │ (checks) │
+└────┬─────┘ └────┬─────┘ └────┬─────┘
+     └────────────┼────────────┘
+                  ▼
+        ┌──────────────────┐
+        │    CLODDSBOT     │
+        │ (Execution Agent)│
+        └────────┬─────────┘
+                 ▼
+        ┌──────────────────┐
+        │   SOLANA / DEXs   │
+        │ (On-chain state) │
+        └──────────────────┘

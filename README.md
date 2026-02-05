@@ -1,8 +1,5 @@
 # Building for agent hackathon solana
 
-# ⚠️ DAIN.exe
-### Autonomous On-Chain Intelligence // Agent Coordination Protocol
-
 # ⚡ DAIN — Decentralized Autonomous Intelligence Network
 
 > _“From intent to execution — coordinated by autonomous agents.”_

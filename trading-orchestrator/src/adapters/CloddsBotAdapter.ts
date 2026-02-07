@@ -66,21 +66,8 @@ export class CloddsBotAdapter extends EventEmitter {
       const response = await this.client.post('/api/router/find-route', params);
       return response.data;
     } catch (error) {
-      // Return mock routing result for demo
-      return {
-        bestRoute: {
-          platform: 'polymarket',
-          price: 0.65,
-          availableSize: params.size,
-          estimatedFees: params.size * 0.001,
-          netPrice: 0.651,
-          slippage: 0.5,
-          isMaker: true,
-        },
-        allRoutes: [],
-        totalSavings: 0,
-        recommendation: 'Execute on Polymarket for best price',
-      };
+      console.error('[CloddsBotAdapter] Failed to find route:', error);
+      throw new Error(`Failed to find route: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 

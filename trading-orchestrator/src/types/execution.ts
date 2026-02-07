@@ -2,6 +2,8 @@
  * Execution Result Type Definitions
  */
 
+export type TradeSide = 'buy' | 'sell';
+
 export interface ExecutionResult {
     intentId: string;
     success: boolean;
@@ -12,6 +14,9 @@ export interface ExecutionResult {
     executedAmount: number;
     executedPrice: number;
     fees: number;
+
+    side: TradeSide;                // Whether this was a buy or sell
+    token: string;                  // The token being traded
 
     slippage?: number;              // Actual slippage in BPS
     executionTime?: number;         // Milliseconds
@@ -28,10 +33,13 @@ export interface ExecutionRoute {
     estimatedFees: number;          // USD
 }
 
+export type Exchange = 'solana' | 'jupiter' | 'binance' | 'bybit' | 'hyperliquid';
+
 export interface Position {
     id: string;
     agentId: string;
     token: string;
+    symbol: string;                 // Trading pair symbol (e.g., 'SOL/USDC')
     amount: number;
     entryPrice: number;
     currentPrice: number;
@@ -39,4 +47,6 @@ export interface Position {
     stopLoss?: number;
     takeProfit?: number;
     openedAt: number;
+    exchange: Exchange;             // Which exchange this position is on
+    tokenMint?: string;             // Solana token mint address (for DEX positions)
 }

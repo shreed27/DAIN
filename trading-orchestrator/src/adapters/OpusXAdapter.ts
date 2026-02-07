@@ -158,25 +158,8 @@ export class OpusXAdapter extends EventEmitter {
       const response = await this.client.get('/api/wallets/god');
       return response.data;
     } catch (error) {
-      // Return mock data for demo
-      return [
-        {
-          address: 'GodWallet1...abc',
-          label: 'Alpha Trader',
-          trustScore: 95,
-          totalTrades: 150,
-          winRate: 78,
-          recentBuys: [],
-        },
-        {
-          address: 'GodWallet2...def',
-          label: 'Whale Hunter',
-          trustScore: 92,
-          totalTrades: 89,
-          winRate: 85,
-          recentBuys: [],
-        },
-      ];
+      console.error('[OpusXAdapter] Failed to get god wallets:', error);
+      return [];
     }
   }
 
@@ -254,14 +237,8 @@ export class OpusXAdapter extends EventEmitter {
       const response = await this.client.post('/api/ai/analyze', { tokenMint });
       return response.data;
     } catch (error) {
-      // Return mock analysis for demo
-      return {
-        reasoning: 'Token shows strong momentum with increasing whale accumulation.',
-        risk: 'Liquidity may be insufficient for large exits.',
-        strategy: 'Consider entry at current levels with 20% position size.',
-        confidence: 72,
-        recommendation: 'buy',
-      };
+      console.error('[OpusXAdapter] Failed to get AI analysis:', error);
+      return null;
     }
   }
 

@@ -12,21 +12,76 @@ import {
     ExecutionResult,
     Position,
     AgentEvent,
-    EventType
+    EventType,
+    TradeSide
 } from '../types';
 import { PermissionManager } from './PermissionManager';
 import { StrategyRegistry } from './StrategyRegistry';
+import { AgentDexAdapter, OpenClawAdapter } from '../adapters';
+
+// SOL mint address (native SOL wrapped)
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
+/**
+ * Calculate realized P&L from an execution result
+ */
+function calculatePnL(
+    result: ExecutionResult,
+    positions: Position[]
+): { pnl: number; isWin: boolean } {
+    if (!result.success) {
+        return { pnl: 0, isWin: false };
+    }
+
+    // For sell orders, we're closing a position - calculate realized P&L
+    if (result.side === 'sell') {
+        // Find matching position by token
+        const position = positions.find(p => p.token === result.token);
+        if (position) {
+            const entryValue = position.entryPrice * result.executedAmount;
+            const exitValue = result.executedPrice * result.executedAmount;
+            const fees = result.fees || 0;
+            const pnl = exitValue - entryValue - fees;
+            return { pnl, isWin: pnl > 0 };
+        }
+    }
+
+    // For buy orders, P&L is realized on close
+    // Track entry for future calculation (no realized P&L yet)
+    return { pnl: 0, isWin: false };
+}
+
+interface ClosePositionResult {
+    success: boolean;
+    amountReceived?: number;
+    error?: string;
+}
+
+export interface OrchestratorAdapters {
+    agentDex?: AgentDexAdapter;
+    openClaw?: OpenClawAdapter;
+}
 
 export class AgentOrchestrator extends EventEmitter {
     private agents: Map<string, AgentConfig> = new Map();
     private positions: Map<string, Position[]> = new Map();
     private performance: Map<string, AgentPerformance> = new Map();
+    private adapters: OrchestratorAdapters;
 
     constructor(
         private permissionManager: PermissionManager,
-        private strategyRegistry: StrategyRegistry
+        private strategyRegistry: StrategyRegistry,
+        adapters?: OrchestratorAdapters
     ) {
         super();
+        this.adapters = adapters || {};
+    }
+
+    /**
+     * Set adapters after construction
+     */
+    setAdapters(adapters: OrchestratorAdapters): void {
+        this.adapters = { ...this.adapters, ...adapters };
     }
 
     /**
@@ -138,7 +193,7 @@ export class AgentOrchestrator extends EventEmitter {
     }
 
     /**
-     * Record execution result
+     * Record execution result and update P&L
      */
     recordExecution(agentId: string, result: ExecutionResult): void {
         const performance = this.performance.get(agentId);
@@ -150,11 +205,21 @@ export class AgentOrchestrator extends EventEmitter {
         performance.totalTrades++;
 
         if (result.success) {
-            // Calculate P&L (simplified - would need more context in real implementation)
-            const pnl = 0; // TODO: Calculate actual P&L
+            // Calculate actual P&L from execution
+            const positions = this.positions.get(agentId) || [];
+            const { pnl, isWin } = calculatePnL(result, positions);
+
             performance.totalPnL += pnl;
             performance.dailyPnL += pnl;
             performance.weeklyPnL += pnl;
+
+            // Update win rate
+            if (result.side === 'sell' && pnl !== 0) {
+                const totalClosedTrades = performance.totalTrades;
+                const previousWins = Math.round(performance.winRate * (totalClosedTrades - 1) / 100);
+                const newWins = previousWins + (isWin ? 1 : 0);
+                performance.winRate = totalClosedTrades > 0 ? (newWins / totalClosedTrades) * 100 : 0;
+            }
         }
 
         // Emit event
@@ -163,7 +228,7 @@ export class AgentOrchestrator extends EventEmitter {
             type: eventType,
             agentId,
             timestamp: Date.now(),
-            data: result
+            data: { ...result, calculatedPnL: result.success ? calculatePnL(result, this.positions.get(agentId) || []).pnl : 0 }
         });
     }
 
@@ -279,27 +344,47 @@ export class AgentOrchestrator extends EventEmitter {
         success: boolean;
         positionsClosed: number;
         fundsReturned: number;
+        errors: string[];
     }> {
         const agent = this.agents.get(agentId);
         if (!agent) {
-            return { success: false, positionsClosed: 0, fundsReturned: 0 };
+            return { success: false, positionsClosed: 0, fundsReturned: 0, errors: ['Agent not found'] };
         }
 
-        // Stop agent
+        // Stop agent immediately to prevent new trades
         agent.status = AgentStatus.Stopped;
         agent.updatedAt = Date.now();
 
         // Get all positions
         const positions = this.positions.get(agentId) || [];
-        const positionsClosed = positions.length;
-
-        // TODO: Actually close positions via execution engines
-        // For now, just clear them
         let fundsReturned = 0;
-        positions.forEach(position => {
-            fundsReturned += position.amount * position.currentPrice;
-        });
+        let positionsClosed = 0;
+        const errors: string[] = [];
 
+        // Actually close each position via execution engines
+        for (const position of positions) {
+            try {
+                const closeResult = await this.closePositionOnExchange(position);
+                if (closeResult.success) {
+                    fundsReturned += closeResult.amountReceived || 0;
+                    positionsClosed++;
+
+                    this.emitEvent({
+                        type: EventType.PositionClosed,
+                        agentId,
+                        timestamp: Date.now(),
+                        data: { ...position, closeResult }
+                    });
+                } else {
+                    errors.push(`Failed to close ${position.symbol}: ${closeResult.error}`);
+                }
+            } catch (error) {
+                const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+                errors.push(`Error closing ${position.symbol}: ${errorMsg}`);
+            }
+        }
+
+        // Clear local state only after attempting closes
         this.positions.set(agentId, []);
 
         // Revoke permissions
@@ -309,10 +394,70 @@ export class AgentOrchestrator extends EventEmitter {
         }
 
         return {
-            success: true,
+            success: errors.length === 0,
             positionsClosed,
-            fundsReturned
+            fundsReturned,
+            errors
         };
+    }
+
+    /**
+     * Close a position on the appropriate exchange
+     */
+    private async closePositionOnExchange(position: Position): Promise<ClosePositionResult> {
+        // Route to appropriate adapter based on exchange
+        if (position.exchange === 'solana' || position.exchange === 'jupiter') {
+            if (!this.adapters.agentDex) {
+                return { success: false, error: 'AgentDex adapter not configured' };
+            }
+
+            try {
+                // Sell token back to SOL
+                const result = await this.adapters.agentDex.executeSwap({
+                    inputMint: position.tokenMint || position.token,
+                    outputMint: SOL_MINT,
+                    amount: String(position.amount),
+                    slippageBps: 100, // 1% emergency slippage
+                });
+
+                return {
+                    success: true,
+                    amountReceived: Number(result.outAmount) / 1e9, // Convert lamports to SOL
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Swap execution failed',
+                };
+            }
+        }
+
+        if (position.exchange === 'binance' || position.exchange === 'bybit' || position.exchange === 'hyperliquid') {
+            if (!this.adapters.openClaw) {
+                return { success: false, error: 'OpenClaw adapter not configured' };
+            }
+
+            try {
+                const result = await this.adapters.openClaw.closePosition({
+                    exchange: position.exchange,
+                    symbol: position.symbol,
+                    side: position.amount > 0 ? 'long' : 'short',
+                });
+
+                return {
+                    success: result.success,
+                    amountReceived: result.executedAmount ? result.executedAmount * (result.executedPrice || position.currentPrice) : undefined,
+                    error: result.error,
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Close position failed',
+                };
+            }
+        }
+
+        return { success: false, error: `Unknown exchange: ${position.exchange}` };
     }
 
     // Private helper methods

@@ -153,12 +153,10 @@ export class OpenClawAdapter extends EventEmitter {
 
       return result;
     } catch (error) {
-      // Return mock result for demo
+      console.error('[OpenClawAdapter] Trade execution failed:', error);
       return {
-        success: true,
-        orderId: `order-${Date.now()}`,
-        executedPrice: 100,
-        executedAmount: Number(params.amount),
+        success: false,
+        error: error instanceof Error ? error.message : 'Trade execution failed',
       };
     }
   }
@@ -175,9 +173,10 @@ export class OpenClawAdapter extends EventEmitter {
       const response = await this.client.post(`/pipelines/${params.exchange}/close`, params);
       return response.data;
     } catch (error) {
+      console.error('[OpenClawAdapter] Close position failed:', error);
       return {
-        success: true,
-        orderId: `close-${Date.now()}`,
+        success: false,
+        error: error instanceof Error ? error.message : 'Close position failed',
       };
     }
   }

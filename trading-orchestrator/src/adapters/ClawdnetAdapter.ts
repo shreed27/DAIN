@@ -299,11 +299,12 @@ export class ClawdnetAdapter extends EventEmitter {
     txHash?: string;
     error?: string;
   }> {
-    // This would integrate with the actual payment system
-    // For now, return mock success
+    // X402 payment requires external payment execution
+    // The actual implementation should use a wallet adapter to execute the payment
+    console.error('[ClawdnetAdapter] X402 payment execution not implemented - requires wallet integration');
     return {
-      success: true,
-      txHash: `0x${Date.now().toString(16)}`,
+      success: false,
+      error: 'X402 payment execution not implemented. Configure wallet integration to enable payments.',
     };
   }
 

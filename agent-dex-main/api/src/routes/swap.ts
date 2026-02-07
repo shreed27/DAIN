@@ -5,6 +5,7 @@ import { getQuote, executeSwap } from '../services/jupiter';
 import { authMiddleware } from '../middleware/auth';
 import { swapRateLimit } from '../middleware/rateLimit';
 import { getAgentKeypair, incrementTradeCount, recordTrade } from '../db';
+import { isValidSolanaAddress, validateSlippageBps, validateAmount } from '../utils/validation';
 
 const router = Router();
 
@@ -18,11 +19,36 @@ router.post('/', swapRateLimit, async (req: Request, res: Response) => {
   try {
     const { inputMint, outputMint, amount, slippageBps, walletPrivateKey } = req.body;
 
+    // Validate required fields
     if (!inputMint || !outputMint || !amount) {
       res.status(400).json({
         error: 'Bad Request',
         message: 'Required: inputMint, outputMint, amount',
       });
+      return;
+    }
+
+    // Validate mint addresses
+    if (!isValidSolanaAddress(inputMint)) {
+      res.status(400).json({ error: 'Bad Request', message: 'Invalid inputMint address' });
+      return;
+    }
+    if (!isValidSolanaAddress(outputMint)) {
+      res.status(400).json({ error: 'Bad Request', message: 'Invalid outputMint address' });
+      return;
+    }
+
+    // Validate amount
+    const amountValidation = validateAmount(amount);
+    if (!amountValidation.valid) {
+      res.status(400).json({ error: 'Bad Request', message: amountValidation.error });
+      return;
+    }
+
+    // Validate slippage
+    const slippageValidation = validateSlippageBps(slippageBps);
+    if (!slippageValidation.valid) {
+      res.status(400).json({ error: 'Bad Request', message: slippageValidation.error });
       return;
     }
 
@@ -52,12 +78,12 @@ router.post('/', swapRateLimit, async (req: Request, res: Response) => {
       return;
     }
 
-    // Get quote
+    // Get quote with validated parameters
     const quote = await getQuote({
       inputMint,
       outputMint,
-      amount: amount.toString(),
-      slippageBps: slippageBps || 50,
+      amount: amountValidation.value!.toString(),
+      slippageBps: slippageValidation.value!,
     });
 
     // Execute swap

@@ -1,5 +1,24 @@
 import { Connection, VersionedTransaction, Keypair } from '@solana/web3.js';
 
+// Slippage validation bounds
+const SLIPPAGE_BOUNDS = {
+  MIN_BPS: 1,      // 0.01%
+  MAX_BPS: 500,    // 5%
+  DEFAULT_BPS: 50, // 0.5%
+};
+
+function validateSlippage(slippageBps?: number): number {
+  if (slippageBps === undefined) return SLIPPAGE_BOUNDS.DEFAULT_BPS;
+
+  if (slippageBps < SLIPPAGE_BOUNDS.MIN_BPS) {
+    throw new Error(`Slippage ${slippageBps} bps is below minimum ${SLIPPAGE_BOUNDS.MIN_BPS} (0.01%)`);
+  }
+  if (slippageBps > SLIPPAGE_BOUNDS.MAX_BPS) {
+    throw new Error(`Slippage ${slippageBps} bps exceeds maximum ${SLIPPAGE_BOUNDS.MAX_BPS} (5%)`);
+  }
+  return slippageBps;
+}
+
 const JUPITER_QUOTE_API = 'https://quote-api.jup.ag/v6';
 const JUPITER_PRICE_API = 'https://price.jup.ag/v4';
 const HELIUS_RPC = process.env.HELIUS_RPC_URL || 'https://calla-zffb4d-fast-mainnet.helius-rpc.com';
@@ -38,7 +57,9 @@ export async function getQuote(params: {
   amount: string;
   slippageBps?: number;
 }): Promise<QuoteResponse> {
-  const { inputMint, outputMint, amount, slippageBps = 50 } = params;
+  const { inputMint, outputMint, amount } = params;
+  // Validate slippage bounds
+  const slippageBps = validateSlippage(params.slippageBps);
 
   const url = new URL(`${JUPITER_QUOTE_API}/quote`);
   url.searchParams.set('inputMint', inputMint);
@@ -81,6 +102,9 @@ export async function executeSwap(params: {
 
   const { swapTransaction } = (await swapRes.json()) as { swapTransaction: string };
 
+  // Get blockhash BEFORE sending (fixes race condition)
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+
   // Deserialize, sign, and send
   const txBuf = Buffer.from(swapTransaction, 'base64');
   const tx = VersionedTransaction.deserialize(txBuf);
@@ -88,16 +112,16 @@ export async function executeSwap(params: {
 
   const rawTx = tx.serialize();
   const txSignature = await connection.sendRawTransaction(rawTx, {
-    skipPreflight: true,
+    // Default to false for safety - preflight catches errors before they hit the blockchain
+    skipPreflight: process.env.SOLANA_SKIP_PREFLIGHT === 'true',
     maxRetries: 3,
   });
 
-  // Confirm
-  const latestBlockhash = await connection.getLatestBlockhash();
+  // Confirm with the SAME blockhash used in the transaction
   await connection.confirmTransaction({
     signature: txSignature,
-    blockhash: latestBlockhash.blockhash,
-    lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+    blockhash,
+    lastValidBlockHeight,
   }, 'confirmed');
 
   return {

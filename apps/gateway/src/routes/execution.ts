@@ -2,16 +2,13 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import type { ServiceRegistry } from '../services/registry.js';
 import type { TradeIntent, ExecutionResult, ExecutionRoute } from '../types.js';
+import * as intentOps from '../db/operations/intents.js';
 
 export const executionRouter = Router();
-
-// In-memory intent store
-const intents: Map<string, TradeIntent> = new Map();
 
 // POST /api/v1/execution/intent - Create trade intent
 executionRouter.post('/intent', async (req: Request, res: Response) => {
   const logger = req.app.locals.logger;
-  const serviceRegistry: ServiceRegistry = req.app.locals.serviceRegistry;
 
   try {
     const { agentId, action, marketType, chain, asset, amount, constraints, signalIds } = req.body;
@@ -38,7 +35,7 @@ executionRouter.post('/intent', async (req: Request, res: Response) => {
       updatedAt: Date.now(),
     };
 
-    intents.set(intent.id, intent);
+    intentOps.createIntent(intent);
     logger.info({ intentId: intent.id, action, asset }, 'Trade intent created');
 
     // Emit WebSocket event
@@ -64,7 +61,7 @@ executionRouter.post('/intent', async (req: Request, res: Response) => {
 
 // GET /api/v1/execution/intent/:id - Get intent by ID
 executionRouter.get('/intent/:id', (req: Request, res: Response) => {
-  const intent = intents.get(req.params.id);
+  const intent = intentOps.getIntentById(req.params.id);
   if (!intent) {
     return res.status(404).json({
       success: false,
@@ -106,30 +103,15 @@ executionRouter.post('/quote', async (req: Request, res: Response) => {
           data: response.data.data,
         });
       } catch (error) {
-        logger.warn('agent-dex quote failed, trying fallback');
+        logger.warn('agent-dex quote failed');
       }
     }
 
-    // Fallback: mock quote
-    const mockQuote = {
-      inputMint,
-      outputMint,
-      inputAmount: amount,
-      outputAmount: Math.floor(Number(amount) * 0.98).toString(),
-      priceImpact: '0.5',
-      slippageBps: 50,
-      routePlan: [{
-        protocol: 'Jupiter',
-        inputMint,
-        outputMint,
-        percent: 100,
-      }],
-    };
-
-    res.json({
-      success: true,
-      source: 'mock',
-      data: mockQuote,
+    // Return error if no service available
+    res.status(503).json({
+      success: false,
+      error: 'Quote service unavailable',
+      message: 'No execution service available for the requested quote',
     });
   } catch (error) {
     logger.error({ error }, 'Failed to get quote');
@@ -151,12 +133,7 @@ executionRouter.post('/swap', async (req: Request, res: Response) => {
 
     // Update intent status if provided
     if (intentId) {
-      const intent = intents.get(intentId);
-      if (intent) {
-        intent.status = 'executing';
-        intent.updatedAt = Date.now();
-        intents.set(intentId, intent);
-      }
+      intentOps.updateIntentStatus(intentId, 'executing');
     }
 
     io?.emit('execution_started', {
@@ -177,6 +154,7 @@ executionRouter.post('/swap', async (req: Request, res: Response) => {
           slippageBps: 50,
         });
 
+        const resultId = uuidv4();
         const result: ExecutionResult = {
           intentId: intentId || uuidv4(),
           success: true,
@@ -198,14 +176,12 @@ executionRouter.post('/swap', async (req: Request, res: Response) => {
           },
         };
 
+        // Save execution result
+        intentOps.createExecutionResult({ id: resultId, ...result });
+
         // Update intent
         if (intentId) {
-          const intent = intents.get(intentId);
-          if (intent) {
-            intent.status = 'completed';
-            intent.updatedAt = Date.now();
-            intents.set(intentId, intent);
-          }
+          intentOps.updateIntentStatus(intentId, 'completed');
         }
 
         io?.emit('execution_completed', {
@@ -222,40 +198,34 @@ executionRouter.post('/swap', async (req: Request, res: Response) => {
         });
       } catch (error) {
         logger.warn({ error }, 'agent-dex swap failed');
+
+        // Update intent to failed
+        if (intentId) {
+          intentOps.updateIntentStatus(intentId, 'failed');
+        }
+
+        io?.emit('execution_failed', {
+          type: 'execution_failed',
+          timestamp: Date.now(),
+          data: { intentId, error: 'Swap execution failed' },
+        });
+
+        return res.status(503).json({
+          success: false,
+          error: 'Swap execution failed',
+          message: 'DEX service unavailable',
+        });
       }
     }
 
-    // Mock execution for other chains or fallback
-    const mockResult: ExecutionResult = {
-      intentId: intentId || uuidv4(),
-      success: true,
-      txHash: `0x${uuidv4().replace(/-/g, '')}`,
-      executedAmount: Number(amount),
-      executedPrice: 1.0,
-      fees: 0.001,
-      slippage: 0.5,
-      executionTimeMs: 1000,
-      route: {
-        executor: 'cloddsbot',
-        platform: 'Mock',
-        path: [inputMint, outputMint],
-        estimatedPrice: 1.0,
-        estimatedSlippage: 0.5,
-        estimatedFees: 0.001,
-        estimatedTimeMs: 1000,
-        score: 90,
-      },
-    };
+    // No service available
+    if (intentId) {
+      intentOps.updateIntentStatus(intentId, 'failed');
+    }
 
-    io?.emit('execution_completed', {
-      type: 'execution_completed',
-      timestamp: Date.now(),
-      data: mockResult,
-    });
-
-    res.json({
-      success: true,
-      data: mockResult,
+    res.status(503).json({
+      success: false,
+      error: 'No execution service available for the requested chain',
     });
   } catch (error) {
     const logger = req.app.locals.logger;
@@ -276,31 +246,38 @@ executionRouter.post('/swap', async (req: Request, res: Response) => {
 
 // POST /api/v1/execution/routes - Compare execution routes
 executionRouter.post('/routes', async (req: Request, res: Response) => {
+  const logger = req.app.locals.logger;
+  const serviceRegistry: ServiceRegistry = req.app.locals.serviceRegistry;
   const { inputMint, outputMint, amount, chain } = req.body;
 
-  // Mock route comparison
-  const routes: ExecutionRoute[] = [
-    {
-      executor: 'agent-dex',
-      platform: 'Jupiter',
-      path: [inputMint, outputMint],
-      estimatedPrice: 1.0,
-      estimatedSlippage: 0.3,
-      estimatedFees: 0.0005,
-      estimatedTimeMs: 3000,
-      score: 95,
-    },
-    {
-      executor: 'cloddsbot',
-      platform: 'Raydium',
-      path: [inputMint, outputMint],
-      estimatedPrice: 0.998,
-      estimatedSlippage: 0.5,
-      estimatedFees: 0.001,
-      estimatedTimeMs: 5000,
-      score: 88,
-    },
-  ];
+  const routes: ExecutionRoute[] = [];
+
+  // Try to get real routes from services
+  if (chain === 'solana' || !chain) {
+    try {
+      const client = serviceRegistry.getClient('agent-dex');
+      const response = await client.get('/api/v1/routes', {
+        params: { inputMint, outputMint, amount },
+      });
+
+      if (response.data.data) {
+        routes.push(...response.data.data);
+      }
+    } catch (error) {
+      logger.warn('Failed to get routes from agent-dex');
+    }
+  }
+
+  if (routes.length === 0) {
+    return res.json({
+      success: true,
+      data: {
+        routes: [],
+        recommended: null,
+        message: 'No routes available',
+      },
+    });
+  }
 
   res.json({
     success: true,
@@ -315,18 +292,41 @@ executionRouter.post('/routes', async (req: Request, res: Response) => {
 executionRouter.get('/intents', (req: Request, res: Response) => {
   const { status, agentId } = req.query;
 
-  let intentList = Array.from(intents.values());
-
-  if (status) {
-    intentList = intentList.filter(i => i.status === status);
-  }
-  if (agentId) {
-    intentList = intentList.filter(i => i.agentId === agentId);
-  }
+  const intentList = intentOps.getAllIntents({
+    status: status as TradeIntent['status'] | undefined,
+    agentId: agentId as string | undefined,
+  });
 
   res.json({
     success: true,
-    data: intentList.sort((a, b) => b.createdAt - a.createdAt),
+    data: intentList,
     count: intentList.length,
+  });
+});
+
+// GET /api/v1/execution/results - Get execution results
+executionRouter.get('/results', (req: Request, res: Response) => {
+  const { intentId, success, limit } = req.query;
+
+  const results = intentOps.getAllExecutionResults({
+    intentId: intentId as string | undefined,
+    success: success !== undefined ? success === 'true' : undefined,
+    limit: limit ? Number(limit) : 50,
+  });
+
+  res.json({
+    success: true,
+    data: results,
+    count: results.length,
+  });
+});
+
+// GET /api/v1/execution/stats - Get execution statistics
+executionRouter.get('/stats', (req: Request, res: Response) => {
+  const stats = intentOps.getExecutionStats();
+
+  res.json({
+    success: true,
+    data: stats,
   });
 });

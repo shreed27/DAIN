@@ -1,16 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import type { ServiceRegistry } from '../services/registry.js';
 import type { Agent, AgentConfig, AgentStatus } from '../types.js';
+import * as agentOps from '../db/operations/agents.js';
 
 export const agentsRouter = Router();
 
-// In-memory agent store (would be backed by orchestrator in production)
-const agents: Map<string, Agent> = new Map();
-
 // GET /api/v1/agents - List all agents
 agentsRouter.get('/', (req: Request, res: Response) => {
-  const agentList = Array.from(agents.values());
+  const agentList = agentOps.getAllAgents();
   res.json({
     success: true,
     data: agentList,
@@ -20,7 +17,7 @@ agentsRouter.get('/', (req: Request, res: Response) => {
 
 // GET /api/v1/agents/:id - Get agent by ID
 agentsRouter.get('/:id', (req: Request, res: Response) => {
-  const agent = agents.get(req.params.id);
+  const agent = agentOps.getAgentById(req.params.id);
   if (!agent) {
     return res.status(404).json({
       success: false,
@@ -77,7 +74,7 @@ agentsRouter.post('/', async (req: Request, res: Response) => {
       updatedAt: Date.now(),
     };
 
-    agents.set(agent.id, agent);
+    agentOps.createAgent(agent);
     logger.info({ agentId: agent.id, name: agent.name }, 'Agent created');
 
     // Emit WebSocket event
@@ -104,7 +101,7 @@ agentsRouter.post('/', async (req: Request, res: Response) => {
 // PUT /api/v1/agents/:id/status - Update agent status
 agentsRouter.put('/:id/status', (req: Request, res: Response) => {
   const logger = req.app.locals.logger;
-  const agent = agents.get(req.params.id);
+  const agent = agentOps.getAgentById(req.params.id);
 
   if (!agent) {
     return res.status(404).json({
@@ -123,10 +120,7 @@ agentsRouter.put('/:id/status', (req: Request, res: Response) => {
     });
   }
 
-  agent.status = status;
-  agent.updatedAt = Date.now();
-  agents.set(agent.id, agent);
-
+  const updatedAgent = agentOps.updateAgentStatus(req.params.id, status);
   logger.info({ agentId: agent.id, status }, 'Agent status updated');
 
   // Emit WebSocket event
@@ -134,19 +128,19 @@ agentsRouter.put('/:id/status', (req: Request, res: Response) => {
   io?.emit('agent_status_changed', {
     type: 'agent_status_changed',
     timestamp: Date.now(),
-    data: { agent, action: 'status_changed' },
+    data: { agent: updatedAgent, action: 'status_changed' },
   });
 
   res.json({
     success: true,
-    data: agent,
+    data: updatedAgent,
   });
 });
 
 // PUT /api/v1/agents/:id/kill - Emergency kill switch
 agentsRouter.put('/:id/kill', async (req: Request, res: Response) => {
   const logger = req.app.locals.logger;
-  const agent = agents.get(req.params.id);
+  const agent = agentOps.getAgentById(req.params.id);
 
   if (!agent) {
     return res.status(404).json({
@@ -156,10 +150,7 @@ agentsRouter.put('/:id/kill', async (req: Request, res: Response) => {
   }
 
   // Set to stopped
-  agent.status = 'stopped';
-  agent.updatedAt = Date.now();
-  agents.set(agent.id, agent);
-
+  const updatedAgent = agentOps.updateAgentStatus(req.params.id, 'stopped');
   logger.warn({ agentId: agent.id }, 'Agent killed via emergency switch');
 
   // Emit WebSocket event
@@ -167,20 +158,20 @@ agentsRouter.put('/:id/kill', async (req: Request, res: Response) => {
   io?.emit('agent_status_changed', {
     type: 'agent_status_changed',
     timestamp: Date.now(),
-    data: { agent, action: 'killed' },
+    data: { agent: updatedAgent, action: 'killed' },
   });
 
   res.json({
     success: true,
     message: 'Agent killed',
-    data: agent,
+    data: updatedAgent,
   });
 });
 
 // DELETE /api/v1/agents/:id - Delete agent
 agentsRouter.delete('/:id', (req: Request, res: Response) => {
   const logger = req.app.locals.logger;
-  const agent = agents.get(req.params.id);
+  const agent = agentOps.getAgentById(req.params.id);
 
   if (!agent) {
     return res.status(404).json({
@@ -189,7 +180,7 @@ agentsRouter.delete('/:id', (req: Request, res: Response) => {
     });
   }
 
-  agents.delete(req.params.id);
+  agentOps.deleteAgent(req.params.id);
   logger.info({ agentId: req.params.id }, 'Agent deleted');
 
   // Emit WebSocket event
@@ -208,7 +199,7 @@ agentsRouter.delete('/:id', (req: Request, res: Response) => {
 
 // GET /api/v1/agents/:id/performance - Get agent performance
 agentsRouter.get('/:id/performance', (req: Request, res: Response) => {
-  const agent = agents.get(req.params.id);
+  const agent = agentOps.getAgentById(req.params.id);
 
   if (!agent) {
     return res.status(404).json({

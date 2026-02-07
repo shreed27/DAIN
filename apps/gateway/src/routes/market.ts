@@ -20,15 +20,10 @@ marketRouter.get('/prices/:mint', async (req: Request, res: Response) => {
   } catch (error) {
     logger.warn({ error }, 'Failed to fetch price from agent-dex');
 
-    // Mock price data
-    res.json({
-      success: true,
-      source: 'mock',
-      data: {
-        mint: req.params.mint,
-        price: 100,
-        symbol: 'TOKEN',
-      },
+    res.status(503).json({
+      success: false,
+      error: 'Price service unavailable',
+      source: 'none',
     });
   }
 });
@@ -58,10 +53,10 @@ marketRouter.get('/prices', async (req: Request, res: Response) => {
   } catch (error) {
     logger.warn({ error }, 'Failed to fetch prices from agent-dex');
 
-    res.json({
-      success: true,
-      source: 'mock',
-      data: {},
+    res.status(503).json({
+      success: false,
+      error: 'Price service unavailable',
+      source: 'none',
     });
   }
 });
@@ -83,17 +78,11 @@ marketRouter.get('/trending', async (req: Request, res: Response) => {
   } catch (error) {
     logger.warn({ error }, 'Failed to fetch trending tokens');
 
-    // Mock trending tokens
-    const mockTrending = [
-      { symbol: 'SOL', name: 'Solana', price: 100, change24h: 5.2 },
-      { symbol: 'BONK', name: 'Bonk', price: 0.00001, change24h: 15.3 },
-      { symbol: 'JUP', name: 'Jupiter', price: 0.8, change24h: -2.1 },
-    ];
-
     res.json({
       success: true,
-      source: 'mock',
-      data: mockTrending,
+      source: 'none',
+      data: [],
+      message: 'Trending data unavailable',
     });
   }
 });
@@ -115,36 +104,11 @@ marketRouter.get('/prediction-markets', async (req: Request, res: Response) => {
   } catch (error) {
     logger.warn({ error }, 'Failed to fetch prediction markets');
 
-    // Mock prediction markets
-    const mockMarkets = [
-      {
-        id: 'btc-100k-2025',
-        platform: 'polymarket',
-        question: 'Will Bitcoin reach $100k in 2025?',
-        outcomes: [
-          { name: 'Yes', price: 0.65 },
-          { name: 'No', price: 0.35 },
-        ],
-        volume24h: 150000,
-        liquidity: 500000,
-      },
-      {
-        id: 'eth-10k-2025',
-        platform: 'polymarket',
-        question: 'Will Ethereum reach $10k in 2025?',
-        outcomes: [
-          { name: 'Yes', price: 0.35 },
-          { name: 'No', price: 0.65 },
-        ],
-        volume24h: 75000,
-        liquidity: 250000,
-      },
-    ];
-
     res.json({
       success: true,
-      source: 'mock',
-      data: mockMarkets,
+      source: 'none',
+      data: [],
+      message: 'Prediction markets unavailable',
     });
   }
 });
@@ -166,25 +130,11 @@ marketRouter.get('/arbitrage', async (req: Request, res: Response) => {
   } catch (error) {
     logger.warn({ error }, 'Failed to fetch arbitrage opportunities');
 
-    // Mock arbitrage data
-    const mockArbitrage = [
-      {
-        id: 'arb-1',
-        token: 'BTC-100k',
-        buyPlatform: 'Polymarket',
-        buyPrice: 0.62,
-        sellPlatform: 'Kalshi',
-        sellPrice: 0.68,
-        profitPercent: 9.7,
-        liquidity: 50000,
-        confidence: 85,
-      },
-    ];
-
     res.json({
       success: true,
-      source: 'mock',
-      data: mockArbitrage,
+      source: 'none',
+      data: [],
+      message: 'Arbitrage data unavailable',
     });
   }
 });
@@ -208,22 +158,11 @@ marketRouter.get('/osint/bounties', async (req: Request, res: Response) => {
   } catch (error) {
     logger.warn({ error }, 'Failed to fetch OSINT bounties');
 
-    // Mock bounties
-    const mockBounties = [
-      {
-        id: 'bounty-1',
-        question: 'What is the team behind token XYZ?',
-        reward: { token: 'SOL', amount: 1.5 },
-        status: 'open',
-        difficulty: 'medium',
-        deadline: Date.now() + 86400000,
-      },
-    ];
-
     res.json({
       success: true,
-      source: 'mock',
-      data: mockBounties,
+      source: 'none',
+      data: [],
+      message: 'OSINT bounties unavailable',
     });
   }
 });
@@ -247,52 +186,63 @@ marketRouter.get('/agents', async (req: Request, res: Response) => {
   } catch (error) {
     logger.warn({ error }, 'Failed to fetch ClawdNet agents');
 
-    // Mock agents
-    const mockAgents = [
-      {
-        id: 'agent-1',
-        handle: '@trading-bot',
-        name: 'Trading Bot',
-        capabilities: ['trading', 'analysis'],
-        skills: [
-          { id: 'market-analysis', price: '0.01' },
-          { id: 'trade-execution', price: '0.05' },
-        ],
-        reputation_score: 4.5,
-        status: 'online',
-      },
-    ];
-
     res.json({
       success: true,
-      source: 'mock',
-      data: mockAgents,
+      source: 'none',
+      data: [],
+      message: 'Agent registry unavailable',
     });
   }
 });
 
-// GET /api/v1/market/stats - Get market statistics
-marketRouter.get('/stats', (req: Request, res: Response) => {
-  // Mock market stats
+// GET /api/v1/market/stats - Get market statistics (computed from real data)
+marketRouter.get('/stats', async (req: Request, res: Response) => {
+  const logger = req.app.locals.logger;
+  const serviceRegistry: ServiceRegistry = req.app.locals.serviceRegistry;
+
+  // Try to aggregate stats from various services
   const stats = {
-    totalVolume24h: 15000000,
-    totalTrades24h: 12500,
-    activePredictionMarkets: 350,
-    activeArbitrageOpportunities: 12,
-    topGainers: [
-      { symbol: 'BONK', change: 25.5 },
-      { symbol: 'WIF', change: 18.3 },
-    ],
-    topLosers: [
-      { symbol: 'SHIB', change: -8.2 },
-      { symbol: 'PEPE', change: -5.1 },
-    ],
-    sentiment: 'bullish',
-    fearGreedIndex: 72,
+    totalVolume24h: 0,
+    totalTrades24h: 0,
+    activePredictionMarkets: 0,
+    activeArbitrageOpportunities: 0,
+    topGainers: [] as Array<{ symbol: string; change: number }>,
+    topLosers: [] as Array<{ symbol: string; change: number }>,
+    sentiment: 'neutral' as string,
+    fearGreedIndex: 50,
+    servicesOnline: 0,
+    servicesTotal: 6,
   };
+
+  // Check service health
+  const healthStatus = await serviceRegistry.checkAllHealth();
+  stats.servicesOnline = Object.values(healthStatus).filter(h => h.status === 'healthy').length;
+
+  // Try to get prediction markets count
+  try {
+    const client = serviceRegistry.getClient('cloddsbot');
+    const response = await client.get('/api/markets');
+    if (Array.isArray(response.data)) {
+      stats.activePredictionMarkets = response.data.length;
+    }
+  } catch (error) {
+    logger.debug('Could not fetch prediction markets for stats');
+  }
+
+  // Try to get arbitrage opportunities count
+  try {
+    const client = serviceRegistry.getClient('cloddsbot');
+    const response = await client.get('/api/arbitrage');
+    if (Array.isArray(response.data)) {
+      stats.activeArbitrageOpportunities = response.data.length;
+    }
+  } catch (error) {
+    logger.debug('Could not fetch arbitrage for stats');
+  }
 
   res.json({
     success: true,
     data: stats,
+    message: stats.servicesOnline === 0 ? 'All services offline - stats unavailable' : undefined,
   });
 });

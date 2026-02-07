@@ -1,7 +1,6 @@
 /**
  * Bounty System Routes
  *
- * Adapted from osint-market for Express gateway
  * Endpoints:
  * - POST /api/v1/bounties - Create bounty
  * - GET /api/v1/bounties - List bounties
@@ -12,18 +11,14 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { processDeposit, processPayout, processRefund, FEE_STRUCTURE } from '../services/escrow';
-import { ESCROW_WALLET } from '../services/solana';
+import { processDeposit, processPayout, processRefund, FEE_STRUCTURE } from '../services/escrow.js';
+import { ESCROW_WALLET } from '../services/solana.js';
+import * as bountyOps from '../db/operations/bounties.js';
 
 const router = Router();
 
 // Supported tokens
 const SUPPORTED_TOKENS = ['SOL', 'USDC'];
-
-// In-memory storage (replace with database in production)
-const bounties = new Map<string, Bounty>();
-const claims = new Map<string, Claim>();
-const submissions = new Map<string, Submission>();
 
 // Types
 export type BountyStatus = 'open' | 'claimed' | 'submitted' | 'completed' | 'expired' | 'cancelled';
@@ -88,36 +83,22 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const { status = 'open', difficulty, tags, page = '1', per_page = '20' } = req.query;
 
-    let filteredBounties = Array.from(bounties.values());
-
-    // Filter by status
-    if (status && status !== 'all') {
-      filteredBounties = filteredBounties.filter(b => b.status === status);
-    }
-
-    // Filter by difficulty
-    if (difficulty) {
-      filteredBounties = filteredBounties.filter(b => b.difficulty === difficulty);
-    }
-
-    // Filter by tags
-    if (tags) {
-      const tagList = (tags as string).split(',').map(t => t.trim().toLowerCase());
-      filteredBounties = filteredBounties.filter(b =>
-        b.tags.some(t => tagList.includes(t.toLowerCase()))
-      );
-    }
-
-    // Pagination
     const pageNum = parseInt(page as string) || 1;
     const perPage = parseInt(per_page as string) || 20;
-    const offset = (pageNum - 1) * perPage;
 
-    const paginatedBounties = filteredBounties.slice(offset, offset + perPage);
+    const tagList = tags ? (tags as string).split(',').map(t => t.trim().toLowerCase()) : undefined;
+
+    const result = bountyOps.getAllBounties({
+      status: status !== 'all' ? status as BountyStatus : undefined,
+      difficulty: difficulty as Difficulty | undefined,
+      tags: tagList,
+      page: pageNum,
+      perPage,
+    });
 
     res.json({
-      bounties: paginatedBounties,
-      total: filteredBounties.length,
+      bounties: result.bounties,
+      total: result.total,
       page: pageNum,
       per_page: perPage,
     });
@@ -210,7 +191,7 @@ router.post('/', async (req: Request, res: Response) => {
       }
 
       bounty.escrow_tx = escrow_tx;
-      bounties.set(bounty.id, bounty);
+      bountyOps.createBounty(bounty);
 
       return res.status(201).json({
         created: true,
@@ -224,7 +205,7 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     // No escrow_tx - save bounty and return deposit instructions
-    bounties.set(bounty.id, bounty);
+    bountyOps.createBounty(bounty);
 
     res.status(201).json({
       created: true,
@@ -251,20 +232,20 @@ router.post('/', async (req: Request, res: Response) => {
 router.get('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const bounty = bounties.get(id);
+    const bounty = bountyOps.getBountyById(id);
 
     if (!bounty) {
       return res.status(404).json({ error: 'Bounty not found' });
     }
 
     // Get related claim and submission
-    const claim = Array.from(claims.values()).find(c => c.bounty_id === id);
-    const submission = Array.from(submissions.values()).find(s => s.bounty_id === id);
+    const claims = bountyOps.getClaimsByBountyId(id);
+    const submissions = bountyOps.getSubmissionsByBountyId(id);
 
     res.json({
       bounty,
-      claim: claim || null,
-      submission: submission || null,
+      claim: claims[0] || null,
+      submission: submissions[0] || null,
     });
   } catch (error) {
     console.error('[Bounties] Get error:', error);
@@ -278,7 +259,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 router.post('/:id/claim', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const bounty = bounties.get(id);
+    const bounty = bountyOps.getBountyById(id);
 
     if (!bounty) {
       return res.status(404).json({ error: 'Bounty not found' });
@@ -308,12 +289,10 @@ router.post('/:id/claim', async (req: Request, res: Response) => {
       expires_at: new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(),
     };
 
-    claims.set(claim.id, claim);
+    bountyOps.createClaim(claim);
 
     // Update bounty status
-    bounty.status = 'claimed';
-    bounty.updated_at = now.toISOString();
-    bounties.set(id, bounty);
+    bountyOps.updateBountyStatus(id, 'claimed');
 
     res.json({
       success: true,
@@ -333,7 +312,7 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { solution, confidence } = req.body;
-    const bounty = bounties.get(id);
+    const bounty = bountyOps.getBountyById(id);
 
     if (!bounty) {
       return res.status(404).json({ error: 'Bounty not found' });
@@ -350,9 +329,7 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
     }
 
     // Verify claim exists and matches
-    const claim = Array.from(claims.values()).find(
-      c => c.bounty_id === id && c.hunter_wallet === hunterWallet
-    );
+    const claim = bountyOps.getClaimByBountyAndHunter(id, hunterWallet);
 
     if (!claim) {
       return res.status(403).json({ error: 'You have not claimed this bounty' });
@@ -360,9 +337,7 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
 
     // Check claim expiry
     if (new Date(claim.expires_at) < new Date()) {
-      bounty.status = 'open';
-      bounty.updated_at = new Date().toISOString();
-      bounties.set(id, bounty);
+      bountyOps.updateBountyStatus(id, 'open');
       return res.status(400).json({ error: 'Claim has expired. Bounty is open again.' });
     }
 
@@ -381,12 +356,10 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
       status: 'pending',
     };
 
-    submissions.set(submission.id, submission);
+    bountyOps.createSubmission(submission);
 
     // Update bounty status
-    bounty.status = 'submitted';
-    bounty.updated_at = new Date().toISOString();
-    bounties.set(id, bounty);
+    bountyOps.updateBountyStatus(id, 'submitted');
 
     res.json({
       success: true,
@@ -406,7 +379,7 @@ router.post('/:id/resolve', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { approved } = req.body;
-    const bounty = bounties.get(id);
+    const bounty = bountyOps.getBountyById(id);
 
     if (!bounty) {
       return res.status(404).json({ error: 'Bounty not found' });
@@ -427,7 +400,8 @@ router.post('/:id/resolve', async (req: Request, res: Response) => {
     }
 
     // Get submission
-    const submission = Array.from(submissions.values()).find(s => s.bounty_id === id);
+    const submissions = bountyOps.getSubmissionsByBountyId(id);
+    const submission = submissions[0];
 
     if (!submission) {
       return res.status(400).json({ error: 'No submission found for this bounty' });
@@ -444,12 +418,8 @@ router.post('/:id/resolve', async (req: Request, res: Response) => {
         });
       }
 
-      submission.status = 'approved';
-      submissions.set(submission.id, submission);
-
-      bounty.status = 'completed';
-      bounty.updated_at = new Date().toISOString();
-      bounties.set(id, bounty);
+      bountyOps.updateSubmissionStatus(submission.id, 'approved');
+      bountyOps.updateBountyStatus(id, 'completed');
 
       return res.json({
         success: true,
@@ -461,12 +431,8 @@ router.post('/:id/resolve', async (req: Request, res: Response) => {
       });
     } else {
       // Rejected - bounty goes back to open
-      submission.status = 'rejected';
-      submissions.set(submission.id, submission);
-
-      bounty.status = 'open';
-      bounty.updated_at = new Date().toISOString();
-      bounties.set(id, bounty);
+      bountyOps.updateSubmissionStatus(submission.id, 'rejected');
+      bountyOps.updateBountyStatus(id, 'open');
 
       return res.json({
         success: true,
@@ -486,7 +452,7 @@ router.post('/:id/resolve', async (req: Request, res: Response) => {
 router.post('/:id/cancel', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const bounty = bounties.get(id);
+    const bounty = bountyOps.getBountyById(id);
 
     if (!bounty) {
       return res.status(404).json({ error: 'Bounty not found' });
@@ -512,9 +478,7 @@ router.post('/:id/cancel', async (req: Request, res: Response) => {
       });
     }
 
-    bounty.status = 'cancelled';
-    bounty.updated_at = new Date().toISOString();
-    bounties.set(id, bounty);
+    bountyOps.updateBountyStatus(id, 'cancelled');
 
     res.json({
       success: true,

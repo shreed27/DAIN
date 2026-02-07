@@ -1,35 +1,21 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import type { ServiceRegistry } from '../services/registry.js';
-import type { Signal, WhaleSignal, ArbitrageSignal, AISignal } from '../types.js';
+import type { Signal, WhaleSignal, ArbitrageSignal, AISignal, SignalSource } from '../types.js';
+import * as signalOps from '../db/operations/signals.js';
 
 export const signalsRouter = Router();
-
-// In-memory signal store
-const signals: Map<string, Signal> = new Map();
 
 // GET /api/v1/signals - List signals
 signalsRouter.get('/', (req: Request, res: Response) => {
   const { source, type, minConfidence, limit } = req.query;
 
-  let signalList = Array.from(signals.values());
-
-  if (source) {
-    signalList = signalList.filter(s => s.source === source);
-  }
-  if (type) {
-    signalList = signalList.filter(s => s.type === type);
-  }
-  if (minConfidence) {
-    signalList = signalList.filter(s => s.confidence >= Number(minConfidence));
-  }
-
-  // Sort by timestamp descending
-  signalList.sort((a, b) => b.timestamp - a.timestamp);
-
-  // Apply limit
-  const limitNum = limit ? Number(limit) : 50;
-  signalList = signalList.slice(0, limitNum);
+  const signalList = signalOps.getAllSignals({
+    source: source as SignalSource | undefined,
+    type: type as string | undefined,
+    minConfidence: minConfidence ? Number(minConfidence) : undefined,
+    limit: limit ? Number(limit) : 50,
+  });
 
   res.json({
     success: true,
@@ -40,7 +26,7 @@ signalsRouter.get('/', (req: Request, res: Response) => {
 
 // GET /api/v1/signals/:id - Get signal by ID
 signalsRouter.get('/:id', (req: Request, res: Response) => {
-  const signal = signals.get(req.params.id);
+  const signal = signalOps.getSignalById(req.params.id);
   if (!signal) {
     return res.status(404).json({
       success: false,
@@ -79,7 +65,7 @@ signalsRouter.post('/', (req: Request, res: Response) => {
       metadata,
     };
 
-    signals.set(signal.id, signal);
+    signalOps.createSignal(signal);
     logger.info({ signalId: signal.id, source, type }, 'Signal created');
 
     // Emit WebSocket event based on signal type
@@ -150,7 +136,7 @@ signalsRouter.post('/whale', (req: Request, res: Response) => {
       timestamp: Date.now(),
     };
 
-    signals.set(signal.id, signal);
+    signalOps.createSignal(signal);
     logger.info({ signalId: signal.id, wallet: walletAddress, action, token }, 'Whale signal created');
 
     io?.emit('whale_detected', {
@@ -198,7 +184,7 @@ signalsRouter.post('/arbitrage', (req: Request, res: Response) => {
       expiresAt: Date.now() + 60000, // Expires in 1 minute
     };
 
-    signals.set(signal.id, signal);
+    signalOps.createSignal(signal);
     logger.info({ signalId: signal.id, token, profitPercent }, 'Arbitrage signal created');
 
     io?.emit('arbitrage_opportunity', {
@@ -248,7 +234,7 @@ signalsRouter.post('/ai', (req: Request, res: Response) => {
       timestamp: Date.now(),
     };
 
-    signals.set(signal.id, signal);
+    signalOps.createSignal(signal);
     logger.info({ signalId: signal.id, token, recommendation }, 'AI signal created');
 
     io?.emit('ai_analysis', {
@@ -277,58 +263,38 @@ signalsRouter.get('/god-wallets', async (req: Request, res: Response) => {
 
   try {
     // Try to fetch from opus-x
-    try {
-      const client = serviceRegistry.getClient('opus-x');
-      const response = await client.get('/api/wallets/god');
-      return res.json({
-        success: true,
-        source: 'opus-x',
-        data: response.data,
-      });
-    } catch (error) {
-      logger.warn('Failed to fetch god wallets from opus-x, using mock data');
-    }
-
-    // Mock god wallet data
-    const mockGodWallets = [
-      {
-        address: 'GodWallet1...abc',
-        label: 'Alpha Trader',
-        trustScore: 95,
-        totalTrades: 150,
-        winRate: 78,
-        recentBuys: [],
-      },
-      {
-        address: 'GodWallet2...def',
-        label: 'Whale Hunter',
-        trustScore: 92,
-        totalTrades: 89,
-        winRate: 85,
-        recentBuys: [],
-      },
-    ];
-
-    res.json({
+    const client = serviceRegistry.getClient('opus-x');
+    const response = await client.get('/api/wallets/god');
+    return res.json({
       success: true,
-      source: 'mock',
-      data: mockGodWallets,
+      source: 'opus-x',
+      data: response.data,
     });
   } catch (error) {
-    logger.error({ error }, 'Failed to fetch god wallets');
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch god wallets',
+    logger.warn('Failed to fetch god wallets from opus-x, returning empty array');
+
+    // Return empty data instead of mock data
+    res.json({
+      success: true,
+      source: 'none',
+      data: [],
+      message: 'God wallet service unavailable',
     });
   }
 });
 
-// Cleanup expired signals periodically
+// Cleanup expired signals periodically (every 60 seconds)
 setInterval(() => {
-  const now = Date.now();
-  for (const [id, signal] of signals.entries()) {
-    if (signal.expiresAt && signal.expiresAt < now) {
-      signals.delete(id);
-    }
+  const deleted = signalOps.deleteExpiredSignals();
+  if (deleted > 0) {
+    console.log(`[Signals] Cleaned up ${deleted} expired signals`);
   }
 }, 60000);
+
+// Cleanup old signals periodically (every hour)
+setInterval(() => {
+  const deleted = signalOps.cleanupOldSignals(24 * 60 * 60 * 1000); // 24 hours
+  if (deleted > 0) {
+    console.log(`[Signals] Cleaned up ${deleted} old signals`);
+  }
+}, 60 * 60 * 1000);

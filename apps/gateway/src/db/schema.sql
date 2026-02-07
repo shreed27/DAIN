@@ -412,3 +412,662 @@ CREATE INDEX IF NOT EXISTS idx_migrations_detected ON token_migrations(detected_
 CREATE INDEX IF NOT EXISTS idx_migrations_ranking ON token_migrations(ranking_score DESC);
 CREATE INDEX IF NOT EXISTS idx_migrations_old_mint ON token_migrations(old_mint);
 CREATE INDEX IF NOT EXISTS idx_migrations_new_mint ON token_migrations(new_mint);
+
+-- ==================== Phase 2: Advanced Feature Tables ====================
+
+-- Futures Positions table - leveraged trading positions
+CREATE TABLE IF NOT EXISTS futures_positions (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  exchange TEXT NOT NULL CHECK (exchange IN ('binance', 'bybit', 'hyperliquid', 'mexc')),
+  symbol TEXT NOT NULL, -- e.g., 'BTCUSDT'
+  side TEXT NOT NULL CHECK (side IN ('long', 'short')),
+  leverage INTEGER NOT NULL DEFAULT 10,
+  size REAL NOT NULL, -- position size in base currency
+  entry_price REAL NOT NULL,
+  mark_price REAL,
+  liquidation_price REAL,
+  unrealized_pnl REAL DEFAULT 0,
+  realized_pnl REAL DEFAULT 0,
+  margin REAL NOT NULL, -- collateral used
+  margin_type TEXT DEFAULT 'isolated' CHECK (margin_type IN ('isolated', 'cross')),
+  stop_loss REAL,
+  take_profit REAL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed', 'liquidated')),
+  opened_at INTEGER NOT NULL,
+  closed_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_futures_positions_wallet ON futures_positions(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_futures_positions_exchange ON futures_positions(exchange);
+CREATE INDEX IF NOT EXISTS idx_futures_positions_status ON futures_positions(status);
+CREATE INDEX IF NOT EXISTS idx_futures_positions_symbol ON futures_positions(symbol);
+
+-- Futures Orders table
+CREATE TABLE IF NOT EXISTS futures_orders (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  exchange TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+  order_type TEXT NOT NULL CHECK (order_type IN ('market', 'limit', 'stop_market', 'stop_limit', 'take_profit', 'take_profit_limit')),
+  quantity REAL NOT NULL,
+  price REAL, -- null for market orders
+  stop_price REAL, -- for stop orders
+  leverage INTEGER NOT NULL DEFAULT 10,
+  reduce_only INTEGER DEFAULT 0,
+  time_in_force TEXT DEFAULT 'GTC' CHECK (time_in_force IN ('GTC', 'IOC', 'FOK', 'GTX')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'open', 'filled', 'partially_filled', 'cancelled', 'rejected', 'expired')),
+  filled_quantity REAL DEFAULT 0,
+  avg_fill_price REAL,
+  exchange_order_id TEXT,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_futures_orders_wallet ON futures_orders(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_futures_orders_exchange ON futures_orders(exchange);
+CREATE INDEX IF NOT EXISTS idx_futures_orders_status ON futures_orders(status);
+CREATE INDEX IF NOT EXISTS idx_futures_orders_symbol ON futures_orders(symbol);
+
+-- Exchange Credentials table (encrypted)
+CREATE TABLE IF NOT EXISTS exchange_credentials (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  exchange TEXT NOT NULL,
+  api_key_encrypted TEXT NOT NULL,
+  api_secret_encrypted TEXT NOT NULL,
+  passphrase_encrypted TEXT, -- for some exchanges
+  is_testnet INTEGER DEFAULT 0,
+  permissions TEXT DEFAULT '[]', -- JSON array of allowed permissions
+  last_used_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(user_wallet, exchange)
+);
+
+CREATE INDEX IF NOT EXISTS idx_exchange_creds_wallet ON exchange_credentials(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_exchange_creds_exchange ON exchange_credentials(exchange);
+
+-- Arbitrage Opportunities table
+CREATE TABLE IF NOT EXISTS arbitrage_opportunities (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL CHECK (type IN ('internal', 'cross_platform', 'combinatorial', 'semantic')),
+  platform_a TEXT NOT NULL,
+  platform_b TEXT,
+  market_a TEXT NOT NULL, -- market/question identifier
+  market_b TEXT,
+  question_text TEXT,
+  price_a REAL NOT NULL,
+  price_b REAL,
+  spread REAL NOT NULL, -- percentage spread
+  expected_profit REAL NOT NULL,
+  confidence REAL DEFAULT 50,
+  liquidity_score REAL DEFAULT 50,
+  risk_score REAL DEFAULT 50,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'expired', 'executed', 'missed')),
+  expires_at INTEGER,
+  detected_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_arb_opportunities_type ON arbitrage_opportunities(type);
+CREATE INDEX IF NOT EXISTS idx_arb_opportunities_status ON arbitrage_opportunities(status);
+CREATE INDEX IF NOT EXISTS idx_arb_opportunities_spread ON arbitrage_opportunities(spread DESC);
+CREATE INDEX IF NOT EXISTS idx_arb_opportunities_detected ON arbitrage_opportunities(detected_at DESC);
+
+-- Arbitrage Executions table
+CREATE TABLE IF NOT EXISTS arbitrage_executions (
+  id TEXT PRIMARY KEY,
+  opportunity_id TEXT NOT NULL REFERENCES arbitrage_opportunities(id),
+  user_wallet TEXT NOT NULL,
+  leg_a_tx TEXT,
+  leg_b_tx TEXT,
+  leg_a_amount REAL NOT NULL,
+  leg_b_amount REAL,
+  leg_a_price REAL NOT NULL,
+  leg_b_price REAL,
+  expected_profit REAL NOT NULL,
+  actual_profit REAL,
+  fees REAL DEFAULT 0,
+  slippage REAL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'partial', 'completed', 'failed')),
+  error TEXT,
+  executed_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_arb_executions_opportunity ON arbitrage_executions(opportunity_id);
+CREATE INDEX IF NOT EXISTS idx_arb_executions_wallet ON arbitrage_executions(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_arb_executions_status ON arbitrage_executions(status);
+
+-- Backtest Runs table
+CREATE TABLE IF NOT EXISTS backtest_runs (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  name TEXT NOT NULL,
+  strategy_id TEXT NOT NULL,
+  strategy_name TEXT NOT NULL,
+  strategy_config TEXT NOT NULL, -- JSON config
+  start_date INTEGER NOT NULL,
+  end_date INTEGER NOT NULL,
+  initial_capital REAL NOT NULL DEFAULT 10000,
+  symbols TEXT NOT NULL, -- JSON array of symbols
+  timeframe TEXT NOT NULL DEFAULT '1h',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+  progress REAL DEFAULT 0, -- 0-100
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  completed_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_wallet ON backtest_runs(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_status ON backtest_runs(status);
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy ON backtest_runs(strategy_id);
+
+-- Backtest Results table
+CREATE TABLE IF NOT EXISTS backtest_results (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES backtest_runs(id) ON DELETE CASCADE,
+  total_return REAL NOT NULL,
+  total_return_percent REAL NOT NULL,
+  sharpe_ratio REAL,
+  sortino_ratio REAL,
+  max_drawdown REAL NOT NULL,
+  max_drawdown_percent REAL NOT NULL,
+  win_rate REAL NOT NULL,
+  profit_factor REAL,
+  total_trades INTEGER NOT NULL,
+  winning_trades INTEGER NOT NULL,
+  losing_trades INTEGER NOT NULL,
+  avg_trade_return REAL,
+  avg_win REAL,
+  avg_loss REAL,
+  largest_win REAL,
+  largest_loss REAL,
+  avg_holding_period_hours REAL,
+  equity_curve TEXT NOT NULL, -- JSON array of {timestamp, equity}
+  trades TEXT NOT NULL, -- JSON array of individual trades
+  monthly_returns TEXT, -- JSON object of month -> return
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_results_run ON backtest_results(run_id);
+
+-- Risk Metrics table
+CREATE TABLE IF NOT EXISTS risk_metrics (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  portfolio_value REAL NOT NULL,
+  var_95 REAL, -- 95% Value at Risk
+  var_99 REAL, -- 99% Value at Risk
+  cvar_95 REAL, -- Conditional VaR (Expected Shortfall)
+  cvar_99 REAL,
+  volatility_daily REAL,
+  volatility_regime TEXT CHECK (volatility_regime IN ('low', 'normal', 'elevated', 'extreme')),
+  beta REAL,
+  correlation_btc REAL,
+  max_position_concentration REAL,
+  leverage_ratio REAL DEFAULT 1,
+  margin_usage REAL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_risk_metrics_wallet ON risk_metrics(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_risk_metrics_timestamp ON risk_metrics(timestamp DESC);
+
+-- Circuit Breaker Config table
+CREATE TABLE IF NOT EXISTS circuit_breaker_config (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL UNIQUE,
+  enabled INTEGER DEFAULT 1,
+  max_daily_loss_percent REAL DEFAULT 10,
+  max_position_loss_percent REAL DEFAULT 25,
+  max_drawdown_percent REAL DEFAULT 15,
+  volatility_threshold REAL DEFAULT 50, -- pause if vol exceeds
+  consecutive_losses_limit INTEGER DEFAULT 5,
+  cooldown_minutes INTEGER DEFAULT 60,
+  trip_count INTEGER DEFAULT 0,
+  last_tripped_at INTEGER,
+  last_trip_reason TEXT,
+  status TEXT DEFAULT 'armed' CHECK (status IN ('armed', 'tripped', 'disabled')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_circuit_breaker_wallet ON circuit_breaker_config(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_circuit_breaker_status ON circuit_breaker_config(status);
+
+-- Stress Test Results table
+CREATE TABLE IF NOT EXISTS stress_test_results (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  scenario_name TEXT NOT NULL,
+  scenario_type TEXT NOT NULL CHECK (scenario_type IN ('historical', 'hypothetical', 'monte_carlo')),
+  scenario_params TEXT NOT NULL, -- JSON config
+  portfolio_impact_percent REAL NOT NULL,
+  var_impact REAL,
+  worst_position TEXT, -- most affected position
+  worst_position_loss REAL,
+  positions_at_risk INTEGER,
+  recovery_time_estimate_days INTEGER,
+  recommendations TEXT, -- JSON array of suggestions
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_stress_test_wallet ON stress_test_results(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_stress_test_scenario ON stress_test_results(scenario_type);
+
+-- Swarm Configs table
+CREATE TABLE IF NOT EXISTS swarm_configs (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  strategy_type TEXT NOT NULL CHECK (strategy_type IN ('copy_trade', 'arbitrage', 'signal', 'ai_builder', 'pump_fun')),
+  wallet_count INTEGER NOT NULL DEFAULT 5,
+  wallets TEXT NOT NULL, -- JSON array of wallet addresses
+  total_capital REAL NOT NULL,
+  per_wallet_capital REAL NOT NULL,
+  coordination_mode TEXT DEFAULT 'sequential' CHECK (coordination_mode IN ('sequential', 'parallel', 'staggered')),
+  stagger_delay_ms INTEGER DEFAULT 100,
+  use_jito INTEGER DEFAULT 0, -- use Jito bundles
+  jito_tip_lamports INTEGER DEFAULT 10000,
+  enabled INTEGER DEFAULT 1,
+  status TEXT DEFAULT 'idle' CHECK (status IN ('idle', 'active', 'executing', 'paused', 'error')),
+  last_execution_at INTEGER,
+  total_executions INTEGER DEFAULT 0,
+  total_pnl REAL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_swarm_configs_wallet ON swarm_configs(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_swarm_configs_strategy ON swarm_configs(strategy_type);
+CREATE INDEX IF NOT EXISTS idx_swarm_configs_status ON swarm_configs(status);
+
+-- Swarm Executions table
+CREATE TABLE IF NOT EXISTS swarm_executions (
+  id TEXT PRIMARY KEY,
+  swarm_id TEXT NOT NULL REFERENCES swarm_configs(id),
+  trigger_type TEXT NOT NULL CHECK (trigger_type IN ('manual', 'signal', 'copy', 'scheduled')),
+  trigger_data TEXT, -- JSON context
+  action TEXT NOT NULL CHECK (action IN ('buy', 'sell', 'close_all')),
+  token TEXT NOT NULL,
+  total_amount REAL NOT NULL,
+  wallets_used INTEGER NOT NULL,
+  successful_txs INTEGER DEFAULT 0,
+  failed_txs INTEGER DEFAULT 0,
+  tx_signatures TEXT, -- JSON array
+  jito_bundle_id TEXT,
+  avg_price REAL,
+  total_fees REAL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'executing', 'completed', 'partial', 'failed')),
+  error TEXT,
+  started_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_swarm_executions_swarm ON swarm_executions(swarm_id);
+CREATE INDEX IF NOT EXISTS idx_swarm_executions_status ON swarm_executions(status);
+CREATE INDEX IF NOT EXISTS idx_swarm_executions_token ON swarm_executions(token);
+
+-- Agent Network Registry table (ClawdNet discovery)
+CREATE TABLE IF NOT EXISTS agent_registry (
+  id TEXT PRIMARY KEY,
+  agent_address TEXT NOT NULL UNIQUE, -- on-chain identity
+  name TEXT NOT NULL,
+  description TEXT,
+  capabilities TEXT NOT NULL, -- JSON array of capability strings
+  pricing TEXT NOT NULL, -- JSON object of capability -> price in USDC
+  reputation_score REAL DEFAULT 50,
+  trust_level TEXT DEFAULT 'new' CHECK (trust_level IN ('new', 'building', 'established', 'trusted', 'elite')),
+  total_jobs INTEGER DEFAULT 0,
+  successful_jobs INTEGER DEFAULT 0,
+  total_earnings REAL DEFAULT 0,
+  status TEXT DEFAULT 'online' CHECK (status IN ('online', 'busy', 'offline')),
+  last_heartbeat_at INTEGER,
+  endpoint_url TEXT,
+  supported_chains TEXT DEFAULT '["solana"]', -- JSON array
+  metadata TEXT, -- JSON for additional data
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_registry_status ON agent_registry(status);
+CREATE INDEX IF NOT EXISTS idx_agent_registry_reputation ON agent_registry(reputation_score DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_registry_trust ON agent_registry(trust_level);
+
+-- Agent Subscriptions table
+CREATE TABLE IF NOT EXISTS agent_subscriptions (
+  id TEXT PRIMARY KEY,
+  subscriber_wallet TEXT NOT NULL,
+  agent_id TEXT NOT NULL REFERENCES agent_registry(id),
+  capability TEXT NOT NULL,
+  price_per_call REAL NOT NULL,
+  calls_remaining INTEGER, -- null = unlimited
+  total_calls INTEGER DEFAULT 0,
+  total_spent REAL DEFAULT 0,
+  status TEXT DEFAULT 'active' CHECK (status IN ('active', 'paused', 'cancelled', 'exhausted')),
+  expires_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(subscriber_wallet, agent_id, capability)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_subscriptions_subscriber ON agent_subscriptions(subscriber_wallet);
+CREATE INDEX IF NOT EXISTS idx_agent_subscriptions_agent ON agent_subscriptions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_subscriptions_status ON agent_subscriptions(status);
+
+-- Agent Jobs table
+CREATE TABLE IF NOT EXISTS agent_jobs (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL REFERENCES agent_registry(id),
+  requester_wallet TEXT NOT NULL,
+  capability TEXT NOT NULL,
+  input_data TEXT NOT NULL, -- JSON request payload
+  output_data TEXT, -- JSON response
+  price REAL NOT NULL,
+  payment_tx TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'running', 'completed', 'failed', 'disputed')),
+  error TEXT,
+  started_at INTEGER,
+  completed_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_agent ON agent_jobs(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_requester ON agent_jobs(requester_wallet);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_status ON agent_jobs(status);
+
+-- Skills Registry table
+CREATE TABLE IF NOT EXISTS skills_registry (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  category TEXT NOT NULL CHECK (category IN ('trading', 'analysis', 'data', 'automation', 'risk', 'social', 'defi', 'nft', 'other')),
+  description TEXT NOT NULL,
+  version TEXT DEFAULT '1.0.0',
+  author TEXT,
+  input_schema TEXT, -- JSON Schema for inputs
+  output_schema TEXT, -- JSON Schema for outputs
+  dependencies TEXT DEFAULT '[]', -- JSON array of other skill names
+  config_schema TEXT, -- JSON Schema for configuration
+  execution_mode TEXT DEFAULT 'sync' CHECK (execution_mode IN ('sync', 'async', 'streaming')),
+  avg_execution_time_ms INTEGER,
+  usage_count INTEGER DEFAULT 0,
+  success_rate REAL DEFAULT 100,
+  enabled INTEGER DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_skills_registry_category ON skills_registry(category);
+CREATE INDEX IF NOT EXISTS idx_skills_registry_name ON skills_registry(name);
+CREATE INDEX IF NOT EXISTS idx_skills_registry_enabled ON skills_registry(enabled);
+
+-- Skill Executions table
+CREATE TABLE IF NOT EXISTS skill_executions (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL REFERENCES skills_registry(id),
+  user_wallet TEXT NOT NULL,
+  input_data TEXT NOT NULL, -- JSON
+  output_data TEXT, -- JSON
+  config TEXT, -- JSON skill config used
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+  execution_time_ms INTEGER,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  completed_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_executions_skill ON skill_executions(skill_id);
+CREATE INDEX IF NOT EXISTS idx_skill_executions_user ON skill_executions(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_skill_executions_status ON skill_executions(status);
+
+-- Survival Mode State table
+CREATE TABLE IF NOT EXISTS survival_mode (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL UNIQUE,
+  current_mode TEXT NOT NULL DEFAULT 'survival' CHECK (current_mode IN ('growth', 'survival', 'defensive', 'critical', 'hibernation')),
+  pnl_24h REAL DEFAULT 0,
+  pnl_7d REAL DEFAULT 0,
+  pnl_30d REAL DEFAULT 0,
+  peak_value REAL,
+  current_value REAL,
+  drawdown_percent REAL DEFAULT 0,
+  mode_entered_at INTEGER,
+  mode_history TEXT DEFAULT '[]', -- JSON array of {mode, entered_at, exited_at, pnl}
+  auto_mode_enabled INTEGER DEFAULT 1,
+  growth_threshold REAL DEFAULT 20, -- PnL % to enter growth mode
+  defensive_threshold REAL DEFAULT -15, -- PnL % to enter defensive
+  critical_threshold REAL DEFAULT -50, -- PnL % to enter critical
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_survival_mode_wallet ON survival_mode(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_survival_mode_current ON survival_mode(current_mode);
+
+-- EVM Transactions table
+CREATE TABLE IF NOT EXISTS evm_transactions (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  chain TEXT NOT NULL CHECK (chain IN ('ethereum', 'base', 'arbitrum', 'optimism', 'polygon')),
+  tx_hash TEXT NOT NULL,
+  tx_type TEXT NOT NULL CHECK (tx_type IN ('swap', 'bridge', 'approve', 'transfer', 'contract_call')),
+  protocol TEXT, -- uniswap, 1inch, odos, wormhole, etc.
+  from_token TEXT,
+  to_token TEXT,
+  from_amount REAL,
+  to_amount REAL,
+  gas_used INTEGER,
+  gas_price_gwei REAL,
+  gas_fee_usd REAL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'failed')),
+  block_number INTEGER,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  confirmed_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_evm_transactions_wallet ON evm_transactions(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_evm_transactions_chain ON evm_transactions(chain);
+CREATE INDEX IF NOT EXISTS idx_evm_transactions_status ON evm_transactions(status);
+CREATE INDEX IF NOT EXISTS idx_evm_transactions_type ON evm_transactions(tx_type);
+
+-- ==================== Phase 3: Additional Supporting Tables ====================
+
+-- Arbitrage Config table - user settings for arbitrage detection
+CREATE TABLE IF NOT EXISTS arbitrage_config (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL UNIQUE,
+  enabled INTEGER DEFAULT 1,
+  min_spread_percent REAL DEFAULT 1.0,
+  max_capital_per_trade REAL DEFAULT 1000,
+  allowed_platforms TEXT DEFAULT '[]', -- JSON array
+  allowed_types TEXT DEFAULT '["internal", "cross_platform"]', -- JSON array
+  auto_execute INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_arb_config_wallet ON arbitrage_config(user_wallet);
+
+-- Backtest Strategies table - pre-defined strategy templates
+CREATE TABLE IF NOT EXISTS backtest_strategies (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL,
+  category TEXT NOT NULL CHECK (category IN ('trend_following', 'mean_reversion', 'breakout', 'market_making', 'arbitrage', 'custom')),
+  parameters TEXT NOT NULL, -- JSON schema for parameters
+  default_params TEXT NOT NULL, -- JSON default values
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_strategies_category ON backtest_strategies(category);
+
+-- Kill Switch Events table - emergency stop history
+CREATE TABLE IF NOT EXISTS kill_switch_events (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  triggered_by TEXT NOT NULL CHECK (triggered_by IN ('user', 'circuit_breaker', 'system')),
+  reason TEXT NOT NULL,
+  positions_closed INTEGER DEFAULT 0,
+  orders_cancelled INTEGER DEFAULT 0,
+  total_value REAL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_kill_switch_wallet ON kill_switch_events(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_kill_switch_triggered_by ON kill_switch_events(triggered_by);
+
+-- Swarm Wallets table - individual wallets in a swarm
+CREATE TABLE IF NOT EXISTS swarm_wallets (
+  id TEXT PRIMARY KEY,
+  swarm_id TEXT NOT NULL REFERENCES swarm_configs(id) ON DELETE CASCADE,
+  address TEXT NOT NULL,
+  private_key_encrypted TEXT NOT NULL,
+  weight REAL DEFAULT 1.0, -- allocation weight
+  balance REAL DEFAULT 0,
+  last_used_at INTEGER,
+  status TEXT DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'low_balance')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(swarm_id, address)
+);
+
+CREATE INDEX IF NOT EXISTS idx_swarm_wallets_swarm ON swarm_wallets(swarm_id);
+CREATE INDEX IF NOT EXISTS idx_swarm_wallets_status ON swarm_wallets(status);
+
+-- Agent Messages table - A2A communication
+CREATE TABLE IF NOT EXISTS agent_messages (
+  id TEXT PRIMARY KEY,
+  from_agent_id TEXT NOT NULL,
+  to_agent_id TEXT NOT NULL,
+  message_type TEXT NOT NULL CHECK (message_type IN ('request', 'response', 'broadcast', 'heartbeat')),
+  payload TEXT NOT NULL, -- JSON
+  correlation_id TEXT, -- for request/response matching
+  acknowledged INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_messages_to ON agent_messages(to_agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_from ON agent_messages(from_agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_correlation ON agent_messages(correlation_id);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_acknowledged ON agent_messages(acknowledged) WHERE acknowledged = 0;
+
+-- Skill Favorites table - user's favorite skills
+CREATE TABLE IF NOT EXISTS skill_favorites (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  skill_id TEXT NOT NULL REFERENCES skills_registry(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  UNIQUE(user_wallet, skill_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_favorites_user ON skill_favorites(user_wallet);
+
+-- Survival Mode History table - state transition history
+CREATE TABLE IF NOT EXISTS survival_mode_history (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  from_state TEXT NOT NULL,
+  to_state TEXT NOT NULL,
+  portfolio_value REAL NOT NULL,
+  portfolio_change REAL NOT NULL, -- % change that triggered transition
+  trigger_reason TEXT NOT NULL,
+  actions_executed TEXT DEFAULT '[]', -- JSON array of actions taken
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_survival_history_wallet ON survival_mode_history(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_survival_history_created ON survival_mode_history(created_at DESC);
+
+-- Survival Mode Metrics table - time series metrics
+CREATE TABLE IF NOT EXISTS survival_mode_metrics (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  portfolio_value REAL NOT NULL,
+  portfolio_change_24h REAL DEFAULT 0,
+  portfolio_change_7d REAL DEFAULT 0,
+  risk_score REAL DEFAULT 50,
+  liquidity_score REAL DEFAULT 50,
+  diversification_score REAL DEFAULT 50,
+  current_state TEXT NOT NULL,
+  recommended_state TEXT NOT NULL,
+  alerts TEXT DEFAULT '[]', -- JSON array
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_survival_metrics_wallet ON survival_mode_metrics(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_survival_metrics_timestamp ON survival_mode_metrics(timestamp DESC);
+
+-- EVM Wallets table - mapping Solana wallets to EVM addresses
+CREATE TABLE IF NOT EXISTS evm_wallets (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL, -- Solana wallet (primary)
+  evm_address TEXT NOT NULL,
+  chain TEXT NOT NULL CHECK (chain IN ('ethereum', 'base', 'arbitrum', 'polygon', 'optimism', 'bsc', 'avalanche')),
+  label TEXT,
+  is_primary INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(user_wallet, evm_address, chain)
+);
+
+CREATE INDEX IF NOT EXISTS idx_evm_wallets_user ON evm_wallets(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_evm_wallets_chain ON evm_wallets(chain);
+
+-- EVM Balances table - token balances on EVM chains
+CREATE TABLE IF NOT EXISTS evm_balances (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  evm_address TEXT NOT NULL,
+  chain TEXT NOT NULL,
+  token_address TEXT NOT NULL,
+  token_symbol TEXT NOT NULL,
+  token_decimals INTEGER NOT NULL,
+  balance TEXT NOT NULL, -- BigInt as string
+  balance_usd REAL DEFAULT 0,
+  last_updated INTEGER NOT NULL,
+  UNIQUE(user_wallet, evm_address, chain, token_address)
+);
+
+CREATE INDEX IF NOT EXISTS idx_evm_balances_user ON evm_balances(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_evm_balances_chain ON evm_balances(chain);
+
+-- Bridge Transactions table - cross-chain bridge transfers
+CREATE TABLE IF NOT EXISTS bridge_transactions (
+  id TEXT PRIMARY KEY,
+  user_wallet TEXT NOT NULL,
+  source_chain TEXT NOT NULL,
+  target_chain TEXT NOT NULL,
+  source_address TEXT NOT NULL,
+  target_address TEXT NOT NULL,
+  token_symbol TEXT NOT NULL,
+  amount REAL NOT NULL,
+  amount_usd REAL NOT NULL,
+  bridge_protocol TEXT NOT NULL, -- wormhole, stargate, etc.
+  source_tx_hash TEXT,
+  target_tx_hash TEXT,
+  status TEXT NOT NULL DEFAULT 'initiated' CHECK (status IN ('initiated', 'source_confirmed', 'bridging', 'completed', 'failed')),
+  estimated_arrival INTEGER,
+  actual_arrival INTEGER,
+  fee REAL DEFAULT 0,
+  fee_usd REAL DEFAULT 0,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_bridge_tx_wallet ON bridge_transactions(user_wallet);
+CREATE INDEX IF NOT EXISTS idx_bridge_tx_status ON bridge_transactions(status);
+CREATE INDEX IF NOT EXISTS idx_bridge_tx_source_chain ON bridge_transactions(source_chain);
+CREATE INDEX IF NOT EXISTS idx_bridge_tx_target_chain ON bridge_transactions(target_chain);

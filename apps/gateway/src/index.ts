@@ -26,6 +26,17 @@ import { automationRouter } from './routes/automation.js';
 import { priceHistoryRouter } from './routes/priceHistory.js';
 import { migrationsRouter } from './routes/migrations.js';
 
+// New feature routes
+import futuresRouter from './routes/futures.js';
+import arbitrageRouter from './routes/arbitrage.js';
+import backtestRouter from './routes/backtest.js';
+import riskRouter from './routes/risk.js';
+import swarmRouter from './routes/swarm.js';
+import agentNetworkRouter from './routes/agentNetwork.js';
+import skillsRouter from './routes/skills.js';
+import survivalModeRouter from './routes/survivalMode.js';
+import evmRouter from './routes/evm.js';
+
 // WebSocket
 import { setupWebSocket } from './websocket/index.js';
 
@@ -97,6 +108,17 @@ app.use('/api/v1/copy-trading', copyTradingRouter);
 app.use('/api/v1/automation', automationRouter);
 app.use('/api/v1/prices', priceHistoryRouter);
 app.use('/api/v1/migrations', migrationsRouter);
+
+// New feature routes
+app.use('/api/v1/futures', futuresRouter);
+app.use('/api/v1/arbitrage', arbitrageRouter);
+app.use('/api/v1/backtest', backtestRouter);
+app.use('/api/v1/risk', riskRouter);
+app.use('/api/v1/swarm', swarmRouter);
+app.use('/api/v1/agent-network', agentNetworkRouter);
+app.use('/api/v1/skills', skillsRouter);
+app.use('/api/v1/survival-mode', survivalModeRouter);
+app.use('/api/v1/evm', evmRouter);
 
 // Socket.IO setup
 const io = new SocketIOServer(httpServer, {

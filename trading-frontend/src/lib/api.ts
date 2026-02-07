@@ -42,6 +42,37 @@ class ApiClient {
     }
   }
 
+  // Generic request helpers
+  async get<T = unknown>(path: string, params?: Record<string, unknown>): Promise<ApiResponse<T>> {
+    const queryParams = new URLSearchParams();
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) {
+          queryParams.set(key, String(value));
+        }
+      });
+    }
+    const queryString = queryParams.toString();
+    const fullPath = queryString ? `/api/v1${path}?${queryString}` : `/api/v1${path}`;
+    return this.request<T>('GET', fullPath);
+  }
+
+  async post<T = unknown>(path: string, body?: unknown): Promise<ApiResponse<T>> {
+    return this.request<T>('POST', `/api/v1${path}`, body);
+  }
+
+  async put<T = unknown>(path: string, body?: unknown): Promise<ApiResponse<T>> {
+    return this.request<T>('PUT', `/api/v1${path}`, body);
+  }
+
+  async patch<T = unknown>(path: string, body?: unknown): Promise<ApiResponse<T>> {
+    return this.request<T>('PATCH', `/api/v1${path}`, body);
+  }
+
+  async delete<T = unknown>(path: string): Promise<ApiResponse<T>> {
+    return this.request<T>('DELETE', `/api/v1${path}`);
+  }
+
   // Health
   async getHealth() {
     return this.request<{
@@ -1039,6 +1070,491 @@ class ApiClient {
         avgGodWalletCount: number;
       };
     }>('GET', '/api/v1/migrations/stats');
+  }
+
+  // ==================== Futures Trading ====================
+
+  async getFuturesPositions(wallet: string, exchangeOrOptions?: string | { exchange?: string; status?: string }) {
+    const params = new URLSearchParams({ wallet });
+    if (typeof exchangeOrOptions === 'string') {
+      params.set('exchange', exchangeOrOptions);
+    } else if (exchangeOrOptions) {
+      if (exchangeOrOptions.exchange) params.set('exchange', exchangeOrOptions.exchange);
+      if (exchangeOrOptions.status) params.set('status', exchangeOrOptions.status);
+    }
+    return this.request<unknown[]>('GET', `/api/v1/futures/positions?${params}`);
+  }
+
+  async getOpenFuturesPositions(wallet: string) {
+    return this.request<unknown[]>('GET', `/api/v1/futures/positions/open?wallet=${wallet}`);
+  }
+
+  async createFuturesPosition(params: {
+    userWallet: string;
+    exchange: string;
+    symbol: string;
+    side: 'long' | 'short';
+    leverage: number;
+    size: number;
+    entryPrice: number;
+    margin?: number;
+    marginType?: string;
+    stopLoss?: number;
+    takeProfit?: number;
+  }) {
+    return this.request<unknown>('POST', '/api/v1/futures/positions', params);
+  }
+
+  async closeFuturesPosition(id: string, exitPrice: number) {
+    return this.request<unknown>('POST', `/api/v1/futures/positions/${id}/close`, { exitPrice });
+  }
+
+  async getFuturesOrders(wallet: string, options?: { exchange?: string; status?: string }) {
+    const params = new URLSearchParams({ wallet });
+    if (options?.exchange) params.set('exchange', options.exchange);
+    if (options?.status) params.set('status', options.status);
+    return this.request<unknown[]>('GET', `/api/v1/futures/orders?${params}`);
+  }
+
+  async createFuturesOrder(params: {
+    userWallet: string;
+    exchange: string;
+    symbol: string;
+    side: 'buy' | 'sell';
+    orderType: string;
+    quantity: number;
+    price?: number;
+    leverage?: number;
+  }) {
+    return this.request<unknown>('POST', '/api/v1/futures/orders', params);
+  }
+
+  async cancelFuturesOrder(id: string) {
+    return this.request<unknown>('POST', `/api/v1/futures/orders/${id}/cancel`);
+  }
+
+  async getConnectedExchanges(wallet: string) {
+    return this.request<string[]>('GET', `/api/v1/futures/exchanges?wallet=${wallet}`);
+  }
+
+  async getFuturesMarkets(exchange?: string) {
+    const params = exchange ? `?exchange=${exchange}` : '';
+    return this.request<unknown[]>('GET', `/api/v1/futures/markets${params}`);
+  }
+
+  async getFuturesStats(wallet: string) {
+    return this.request<unknown>('GET', `/api/v1/futures/stats?wallet=${wallet}`);
+  }
+
+  // ==================== Arbitrage ====================
+
+  async getArbitrageOpportunitiesV2(options?: { type?: string; status?: string; minSpread?: number; platform?: string; limit?: number }) {
+    const params = new URLSearchParams();
+    if (options) Object.entries(options).forEach(([k, v]) => v !== undefined && params.set(k, String(v)));
+    return this.request<unknown[]>('GET', `/api/v1/arbitrage/opportunities?${params}`);
+  }
+
+  async executeArbitrage(opportunityId: string, userWallet: string, amount: number) {
+    return this.request<unknown>('POST', '/api/v1/arbitrage/execute', { opportunityId, userWallet, amount });
+  }
+
+  async getArbitrageExecutions(wallet: string, limit?: number) {
+    const params = new URLSearchParams({ wallet });
+    if (limit) params.set('limit', String(limit));
+    return this.request<unknown[]>('GET', `/api/v1/arbitrage/executions?${params}`);
+  }
+
+  async getArbitrageConfig(wallet: string) {
+    return this.request<unknown>('GET', `/api/v1/arbitrage/config?wallet=${wallet}`);
+  }
+
+  async saveArbitrageConfig(wallet: string, config: unknown) {
+    return this.request<unknown>('POST', '/api/v1/arbitrage/config', { userWallet: wallet, ...config as object });
+  }
+
+  async getArbitrageStats(wallet: string) {
+    return this.request<unknown>('GET', `/api/v1/arbitrage/stats?wallet=${wallet}`);
+  }
+
+  // ==================== Backtest ====================
+
+  async getBacktestStrategies() {
+    return this.request<unknown[]>('GET', '/api/v1/backtest/strategies');
+  }
+
+  async getBacktestRuns(wallet: string, options?: { strategy?: string; status?: string; limit?: number }) {
+    const params = new URLSearchParams({ wallet });
+    if (options) Object.entries(options).forEach(([k, v]) => v !== undefined && params.set(k, String(v)));
+    return this.request<unknown[]>('GET', `/api/v1/backtest/runs?${params}`);
+  }
+
+  async createBacktestRun(params: {
+    userWallet: string;
+    name: string;
+    strategy: string;
+    symbol: string;
+    startDate: number | string;
+    endDate: number | string;
+    initialCapital?: number;
+    parameters?: Record<string, unknown>;
+  }) {
+    return this.request<unknown>('POST', '/api/v1/backtest/runs', params);
+  }
+
+  async getBacktestResults(runId: string) {
+    return this.request<unknown>('GET', `/api/v1/backtest/runs/${runId}/results`);
+  }
+
+  async compareBacktests(backtestIds: string[]) {
+    return this.request<unknown>('POST', '/api/v1/backtest/compare', { backtestIds });
+  }
+
+  async simulateBacktest(params: {
+    strategy: string;
+    symbol: string;
+    startDate: string;
+    endDate: string;
+    parameters?: Record<string, unknown>;
+    initialCapital?: number;
+  }) {
+    return this.request<unknown>('POST', '/api/v1/backtest/simulate', params);
+  }
+
+  // ==================== Risk Management ====================
+
+  async getRiskMetrics(wallet: string) {
+    return this.request<unknown>('GET', `/api/v1/risk/metrics?wallet=${wallet}`);
+  }
+
+  async getRiskMetricsHistory(wallet: string, options?: { startDate?: number; endDate?: number; limit?: number }) {
+    const params = new URLSearchParams({ wallet });
+    if (options) Object.entries(options).forEach(([k, v]) => v !== undefined && params.set(k, String(v)));
+    return this.request<unknown[]>('GET', `/api/v1/risk/metrics/history?${params}`);
+  }
+
+  async getCircuitBreakerConfig(wallet: string) {
+    return this.request<unknown>('GET', `/api/v1/risk/circuit-breaker?wallet=${wallet}`);
+  }
+
+  async saveCircuitBreakerConfig(config: unknown) {
+    return this.request<unknown>('POST', '/api/v1/risk/circuit-breaker', config);
+  }
+
+  async triggerCircuitBreaker(wallet: string, reason: string) {
+    return this.request<unknown>('POST', '/api/v1/risk/circuit-breaker/trigger', { wallet, reason });
+  }
+
+  async resetCircuitBreaker(wallet: string) {
+    return this.request<unknown>('POST', '/api/v1/risk/circuit-breaker/reset', { wallet });
+  }
+
+  async getStressTestScenarios() {
+    return this.request<unknown[]>('GET', '/api/v1/risk/stress-tests/scenarios');
+  }
+
+  async runStressTest(wallet: string, scenario: string, params?: unknown) {
+    return this.request<unknown>('POST', '/api/v1/risk/stress-tests', { userWallet: wallet, scenario, ...params as object });
+  }
+
+  async getStressTestResults(wallet: string, options?: { scenarioType?: string; limit?: number }) {
+    const params = new URLSearchParams({ wallet });
+    if (options) Object.entries(options).forEach(([k, v]) => v !== undefined && params.set(k, String(v)));
+    return this.request<unknown[]>('GET', `/api/v1/risk/stress-tests?${params}`);
+  }
+
+  async triggerKillSwitch(wallet: string, reason: string) {
+    return this.request<unknown>('POST', '/api/v1/risk/kill-switch', { userWallet: wallet, reason });
+  }
+
+  async getKillSwitchHistory(wallet: string, limit?: number) {
+    const params = new URLSearchParams({ wallet });
+    if (limit) params.set('limit', String(limit));
+    return this.request<unknown[]>('GET', `/api/v1/risk/kill-switch/history?${params}`);
+  }
+
+  async getRiskDashboard(wallet: string) {
+    return this.request<unknown>('GET', `/api/v1/risk/dashboard?wallet=${wallet}`);
+  }
+
+  // ==================== Swarm Trading ====================
+
+  async getSwarms(wallet: string, options?: { status?: string; strategy?: string }) {
+    const params = new URLSearchParams({ wallet });
+    if (options) Object.entries(options).forEach(([k, v]) => v !== undefined && params.set(k, String(v)));
+    return this.request<unknown[]>('GET', `/api/v1/swarm?${params}`);
+  }
+
+  async createSwarm(params: {
+    userWallet: string;
+    name: string;
+    strategy: string;
+    walletCount?: number;
+    wallets?: string[];
+    maxSlippage?: number;
+    useJitoBundle?: boolean;
+  }) {
+    return this.request<unknown>('POST', '/api/v1/swarm', params);
+  }
+
+  async getSwarm(id: string) {
+    return this.request<unknown>('GET', `/api/v1/swarm/${id}`);
+  }
+
+  async updateSwarm(id: string, updates: unknown) {
+    return this.request<unknown>('PATCH', `/api/v1/swarm/${id}`, updates);
+  }
+
+  async dissolveSwarm(id: string) {
+    return this.request<unknown>('DELETE', `/api/v1/swarm/${id}`);
+  }
+
+  async getSwarmWallets(swarmId: string) {
+    return this.request<unknown[]>('GET', `/api/v1/swarm/${swarmId}/wallets`);
+  }
+
+  async executeSwarmTrade(swarmId: string, params: { symbol: string; side: 'buy' | 'sell'; totalAmount: number }) {
+    return this.request<unknown>('POST', `/api/v1/swarm/${swarmId}/execute`, params);
+  }
+
+  async getSwarmExecutions(swarmId: string, options?: { status?: string; limit?: number }) {
+    const params = new URLSearchParams();
+    if (options) Object.entries(options).forEach(([k, v]) => v !== undefined && params.set(k, String(v)));
+    return this.request<unknown[]>('GET', `/api/v1/swarm/${swarmId}/executions?${params}`);
+  }
+
+  async getSwarmStats(wallet: string) {
+    return this.request<unknown>('GET', `/api/v1/swarm/stats/${wallet}`);
+  }
+
+  // ==================== Agent Network (ClawdNet) ====================
+
+  async discoverAgents(options?: { capabilities?: string[]; minReputation?: number; maxPrice?: number; status?: string; limit?: number }) {
+    const params = new URLSearchParams();
+    if (options) {
+      Object.entries(options).forEach(([k, v]) => {
+        if (v !== undefined) {
+          if (Array.isArray(v)) {
+            params.set(k, v.join(','));
+          } else {
+            params.set(k, String(v));
+          }
+        }
+      });
+    }
+    return this.request<unknown[]>('GET', `/api/v1/agent-network/discover?${params}`);
+  }
+
+  async getAgentDetails(agentId: string) {
+    return this.request<unknown>('GET', `/api/v1/agent-network/agents/${agentId}`);
+  }
+
+  async registerAgent(params: {
+    agentId: string;
+    name: string;
+    description?: string;
+    ownerWallet: string;
+    capabilities: string[];
+    endpoint: string;
+    pricePerCall?: number;
+  }) {
+    return this.request<unknown>('POST', '/api/v1/agent-network/agents', params);
+  }
+
+  async getAgentSubscriptions(wallet: string) {
+    return this.request<unknown[]>('GET', `/api/v1/agent-network/subscriptions?wallet=${wallet}`);
+  }
+
+  async subscribeToAgent(agentId: string, subscriberWallet: string, tier?: string) {
+    return this.request<unknown>('POST', '/api/v1/agent-network/subscriptions', { agentId, subscriberWallet, tier });
+  }
+
+  async hireAgent(agentId: string, callerWallet: string, task: { description: string; input: unknown }) {
+    return this.request<unknown>('POST', '/api/v1/agent-network/jobs', { agentId, callerWallet, ...task });
+  }
+
+  async getAgentJobs(wallet: string, options?: { agentId?: string; status?: string; limit?: number }) {
+    const params = new URLSearchParams({ wallet });
+    if (options) Object.entries(options).forEach(([k, v]) => v !== undefined && params.set(k, String(v)));
+    return this.request<unknown[]>('GET', `/api/v1/agent-network/jobs?${params}`);
+  }
+
+  async getAgentNetworkStats() {
+    return this.request<unknown>('GET', '/api/v1/agent-network/stats');
+  }
+
+  // ==================== Skills ====================
+
+  async getSkills(options?: { category?: string; enabled?: boolean; search?: string; sortBy?: string; limit?: number }) {
+    const params = new URLSearchParams();
+    if (options) {
+      Object.entries(options).forEach(([k, v]) => {
+        if (v !== undefined) {
+          params.set(k, typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v));
+        }
+      });
+    }
+    return this.request<unknown[]>('GET', `/api/v1/skills?${params}`);
+  }
+
+  async getSkillsByCategory() {
+    return this.request<Record<string, unknown[]>>('GET', '/api/v1/skills/by-category');
+  }
+
+  async getSkillDetails(id: string) {
+    return this.request<unknown>('GET', `/api/v1/skills/${id}`);
+  }
+
+  async executeSkill(skillId: string, userWallet: string, input: unknown) {
+    return this.request<unknown>('POST', `/api/v1/skills/${skillId}/execute`, { userWallet, input });
+  }
+
+  async getSkillExecutions(wallet: string, options?: { skillId?: string; status?: string; limit?: number }) {
+    const params = new URLSearchParams();
+    if (options) Object.entries(options).forEach(([k, v]) => v !== undefined && params.set(k, String(v)));
+    return this.request<unknown[]>('GET', `/api/v1/skills/executions/wallet/${wallet}?${params}`);
+  }
+
+  async getFavoriteSkills(wallet: string) {
+    return this.request<unknown[]>('GET', `/api/v1/skills/favorites/${wallet}`);
+  }
+
+  async addFavoriteSkill(userWallet: string, skillId: string) {
+    return this.request<unknown>('POST', '/api/v1/skills/favorites', { userWallet, skillId });
+  }
+
+  async removeFavoriteSkill(wallet: string, skillId: string) {
+    return this.request<unknown>('DELETE', `/api/v1/skills/favorites/${wallet}/${skillId}`);
+  }
+
+  async getSkillStats(wallet: string) {
+    return this.request<unknown>('GET', `/api/v1/skills/stats/${wallet}`);
+  }
+
+  async getSkillCategories() {
+    return this.request<string[]>('GET', '/api/v1/skills/categories/list');
+  }
+
+  // ==================== Survival Mode ====================
+
+  async getSurvivalStatus(wallet: string) {
+    return this.request<unknown>('GET', `/api/v1/survival-mode/status?wallet=${wallet}`);
+  }
+
+  async updateSurvivalConfig(wallet: string, updates: unknown) {
+    return this.request<unknown>('PATCH', `/api/v1/survival-mode/config?wallet=${wallet}`, updates);
+  }
+
+  async toggleSurvivalMode(wallet: string, enabled: boolean) {
+    return this.request<unknown>('POST', '/api/v1/survival-mode/toggle', { wallet, enabled });
+  }
+
+  async transitionSurvivalState(params: {
+    wallet: string;
+    newState: string;
+    portfolioValue?: number;
+    portfolioChange?: number;
+    reason?: string;
+    actions?: string[];
+  }) {
+    return this.request<unknown>('POST', '/api/v1/survival-mode/transition', params);
+  }
+
+  async calculateSurvivalState(wallet: string, portfolioChange: number) {
+    return this.request<unknown>('POST', '/api/v1/survival-mode/calculate', { wallet, portfolioChange });
+  }
+
+  async getSurvivalHistory(wallet: string, options?: { limit?: number; fromDate?: number }) {
+    const params = new URLSearchParams({ wallet });
+    if (options) Object.entries(options).forEach(([k, v]) => v !== undefined && params.set(k, String(v)));
+    return this.request<unknown[]>('GET', `/api/v1/survival-mode/history?${params}`);
+  }
+
+  async getSurvivalMetrics(wallet: string) {
+    return this.request<unknown>('GET', `/api/v1/survival-mode/metrics?wallet=${wallet}`);
+  }
+
+  async getSurvivalDashboard(wallet: string) {
+    return this.request<unknown>('GET', `/api/v1/survival-mode/dashboard?wallet=${wallet}`);
+  }
+
+  async getSurvivalStates() {
+    return this.request<unknown[]>('GET', '/api/v1/survival-mode/states');
+  }
+
+  // ==================== EVM Integration ====================
+
+  async getSupportedChains() {
+    return this.request<unknown[]>('GET', '/api/v1/evm/chains');
+  }
+
+  async getEVMWallets(wallet: string, chain?: string) {
+    const params = new URLSearchParams({ wallet });
+    if (chain) params.set('chain', chain);
+    return this.request<unknown[]>('GET', `/api/v1/evm/wallets?${params}`);
+  }
+
+  async addEVMWallet(params: { userWallet: string; evmAddress: string; chain: string; label?: string; isPrimary?: boolean }) {
+    return this.request<unknown>('POST', '/api/v1/evm/wallets', params);
+  }
+
+  async removeEVMWallet(id: string) {
+    return this.request<unknown>('DELETE', `/api/v1/evm/wallets/${id}`);
+  }
+
+  async getEVMBalances(wallet: string, chainOrOptions?: string | { chain?: string; evmAddress?: string }) {
+    const params = new URLSearchParams({ wallet });
+    if (typeof chainOrOptions === 'string') {
+      params.set('chain', chainOrOptions);
+    } else if (chainOrOptions) {
+      Object.entries(chainOrOptions).forEach(([k, v]) => v !== undefined && params.set(k, String(v)));
+    }
+    return this.request<unknown[]>('GET', `/api/v1/evm/balances?${params}`);
+  }
+
+  async getEVMTransactions(wallet: string, options?: { chain?: string; type?: string; status?: string; limit?: number }) {
+    const params = new URLSearchParams({ wallet });
+    if (options) Object.entries(options).forEach(([k, v]) => v !== undefined && params.set(k, String(v)));
+    return this.request<unknown[]>('GET', `/api/v1/evm/transactions?${params}`);
+  }
+
+  async getEVMSwapQuote(chain: string, tokenIn: string, tokenOut: string, amountIn: number, protocol?: string) {
+    return this.request<unknown>('POST', '/api/v1/evm/swap/quote', { chain, tokenIn, tokenOut, amountIn, protocol });
+  }
+
+  async executeEVMSwap(params: {
+    userWallet: string;
+    evmAddress: string;
+    chain: string;
+    tokenIn: string;
+    tokenOut: string;
+    amountIn: number;
+    slippage?: number;
+    protocol?: string;
+  }) {
+    return this.request<unknown>('POST', '/api/v1/evm/swap', params);
+  }
+
+  async getBridgeTransactions(wallet: string, options?: { status?: string; limit?: number }) {
+    const params = new URLSearchParams({ wallet });
+    if (options) Object.entries(options).forEach(([k, v]) => v !== undefined && params.set(k, String(v)));
+    return this.request<unknown[]>('GET', `/api/v1/evm/bridge?${params}`);
+  }
+
+  async initiateBridge(params: {
+    userWallet: string;
+    sourceChain: string;
+    targetChain: string;
+    sourceAddress: string;
+    targetAddress: string;
+    tokenSymbol: string;
+    amount: number;
+    bridgeProtocol?: string;
+  }) {
+    return this.request<unknown>('POST', '/api/v1/evm/bridge', params);
+  }
+
+  async getEVMStats(wallet: string) {
+    return this.request<unknown>('GET', `/api/v1/evm/stats/${wallet}`);
   }
 }
 

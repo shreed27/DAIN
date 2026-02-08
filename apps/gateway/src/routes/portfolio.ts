@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { ServiceRegistry } from '../services/registry.js';
 import type { Position } from '../types.js';
 import * as positionOps from '../db/operations/positions.js';
+import { getWalletTokens } from '../services/tokenBalances.js';
 
 export const portfolioRouter = Router();
 
@@ -177,24 +178,27 @@ portfolioRouter.delete('/positions/:id', (req: Request, res: Response) => {
   });
 });
 
-// GET /api/v1/portfolio/wallet/:address - Get wallet portfolio from agent-dex
+// GET /api/v1/portfolio/wallet/:address - Get wallet portfolio using direct Solana RPC
 portfolioRouter.get('/wallet/:address', async (req: Request, res: Response) => {
   const logger = req.app.locals.logger;
-  const serviceRegistry: ServiceRegistry = req.app.locals.serviceRegistry;
 
   try {
-    const client = serviceRegistry.getClient('agent-dex');
-    const response = await client.get(`/api/v1/portfolio/${req.params.address}`);
+    const walletAddress = req.params.address;
+
+    // Use direct Solana RPC to fetch token balances
+    const data = await getWalletTokens(walletAddress);
+
+    logger.info({ walletAddress, tokenCount: data.tokens.length }, 'Fetched wallet portfolio');
 
     return res.json({
       success: true,
-      source: 'agent-dex',
-      data: response.data.data,
+      source: 'solana-rpc',
+      data,
     });
   } catch (error) {
-    logger.warn({ error }, 'Failed to fetch wallet portfolio from agent-dex');
+    logger.error({ error, address: req.params.address }, 'Failed to fetch wallet portfolio');
 
-    // Return empty data instead of mock data
+    // Return empty data on error
     res.json({
       success: true,
       source: 'none',
@@ -204,7 +208,7 @@ portfolioRouter.get('/wallet/:address', async (req: Request, res: Response) => {
         tokens: [],
         totalUsdValue: 0,
       },
-      message: 'Wallet service unavailable',
+      message: 'Failed to fetch wallet data',
     });
   }
 });

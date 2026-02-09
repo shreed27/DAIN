@@ -19,7 +19,7 @@ import {
 import { cn } from "@/lib/utils";
 import api from "@/lib/api";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { useCustomWalletModal } from "@/components/providers/CustomWalletModalProvider";
 
 interface LedgerEntry {
   id: string;
@@ -291,7 +291,7 @@ function CalibrationChart({ data }: { data: CalibrationData }) {
 
 export default function TradeLedgerPage() {
   const { publicKey, connected } = useWallet();
-  const { setVisible } = useWalletModal();
+  const { setVisible } = useCustomWalletModal();
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [stats, setStats] = useState<LedgerStats | null>(null);
   const [calibration, setCalibration] = useState<CalibrationData | null>(null);

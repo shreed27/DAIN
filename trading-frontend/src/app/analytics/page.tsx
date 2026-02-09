@@ -6,7 +6,7 @@ import { Globe, ArrowLeftRight, FlaskConical, Shield, ChevronRight } from "lucid
 import { cn } from "@/lib/utils";
 import dynamic from "next/dynamic";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { useCustomWalletModal } from "@/components/providers/CustomWalletModalProvider";
 
 const MarketIntelTab = dynamic(() => import("./tabs/MarketIntelTab"), { ssr: false });
 const ArbitrageTab = dynamic(() => import("./tabs/ArbitrageTab"), { ssr: false });
@@ -22,7 +22,7 @@ const tabs = [
 
 export default function AnalyticsPage() {
     const { publicKey, connected } = useWallet();
-    const { setVisible } = useWalletModal();
+    const { setVisible } = useCustomWalletModal();
     const [activeTab, setActiveTab] = useState("market-intel");
 
     const walletAddress = connected && publicKey ? publicKey.toBase58() : null;

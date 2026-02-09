@@ -9,7 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import api from "@/lib/api";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { useCustomWalletModal } from "@/components/providers/CustomWalletModalProvider";
 
 interface RiskMetrics {
     valueAtRisk: number;
@@ -47,7 +47,7 @@ interface StressTestResult {
 
 export default function RiskPage() {
     const { publicKey, connected } = useWallet();
-    const { setVisible } = useWalletModal();
+    const { setVisible } = useCustomWalletModal();
     const [metrics, setMetrics] = useState<RiskMetrics | null>(null);
     const [circuitBreaker, setCircuitBreaker] = useState<CircuitBreakerConfig | null>(null);
     const [stressTests, setStressTests] = useState<StressTestResult[]>([]);

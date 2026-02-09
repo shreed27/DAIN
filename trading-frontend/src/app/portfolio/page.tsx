@@ -6,7 +6,7 @@ import { Wallet, FileText, ArrowLeftRight, RefreshCcw, DollarSign, ChevronRight 
 import { cn } from "@/lib/utils";
 import dynamic from "next/dynamic";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { useCustomWalletModal } from "@/components/providers/CustomWalletModalProvider";
 
 const HoldingsTab = dynamic(() => import("./tabs/HoldingsTab"), { ssr: false });
 const TradeLedgerTab = dynamic(() => import("./tabs/TradeLedgerTab"), { ssr: false });
@@ -20,7 +20,7 @@ const tabs = [
 
 export default function PortfolioPage() {
     const { publicKey, connected } = useWallet();
-    const { setVisible } = useWalletModal();
+    const { setVisible } = useCustomWalletModal();
     const [activeTab, setActiveTab] = useState("holdings");
 
     const walletAddress = connected && publicKey ? publicKey.toBase58() : null;

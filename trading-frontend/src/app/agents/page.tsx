@@ -6,7 +6,7 @@ import { Users, Store, Zap, Sparkles, Target, ChevronRight } from "lucide-react"
 import { cn } from "@/lib/utils";
 import dynamic from "next/dynamic";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { useCustomWalletModal } from "@/components/providers/CustomWalletModalProvider";
 
 const AgentsTab = dynamic(() => import("./tabs/AgentsTab"), { ssr: false });
 const MarketplaceTab = dynamic(() => import("./tabs/MarketplaceTab"), { ssr: false });
@@ -24,7 +24,7 @@ const tabs = [
 
 export default function AgentsPage() {
     const { publicKey, connected } = useWallet();
-    const { setVisible } = useWalletModal();
+    const { setVisible } = useCustomWalletModal();
     const [activeTab, setActiveTab] = useState("agents");
 
     const walletAddress = connected && publicKey ? publicKey.toBase58() : null;

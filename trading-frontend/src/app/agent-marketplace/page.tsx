@@ -9,7 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import api from "@/lib/api";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { useCustomWalletModal } from "@/components/providers/CustomWalletModalProvider";
 
 interface Agent {
     id: string;
@@ -57,7 +57,7 @@ const CAPABILITY_COLORS: Record<string, string> = {
 
 export default function AgentMarketplacePage() {
     const { publicKey, connected } = useWallet();
-    const { setVisible } = useWalletModal();
+    const { setVisible } = useCustomWalletModal();
     const [agents, setAgents] = useState<Agent[]>([]);
     const [subscriptions, setSubscriptions] = useState<AgentSubscription[]>([]);
     const [stats, setStats] = useState<NetworkStats | null>(null);

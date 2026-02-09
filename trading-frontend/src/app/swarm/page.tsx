@@ -9,7 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import api from "@/lib/api";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { useCustomWalletModal } from "@/components/providers/CustomWalletModalProvider";
 
 interface SwarmConfig {
     id: string;
@@ -59,7 +59,7 @@ interface SwarmStats {
 
 export default function SwarmPage() {
     const { publicKey, connected } = useWallet();
-    const { setVisible } = useWalletModal();
+    const { setVisible } = useCustomWalletModal();
     const [swarms, setSwarms] = useState<SwarmConfig[]>([]);
     const [selectedSwarm, setSelectedSwarm] = useState<SwarmConfig | null>(null);
     const [walletsListList, setWalletsList] = useState<SwarmWallet[]>([]);

@@ -20,7 +20,7 @@ import {
 import { cn } from "@/lib/utils";
 import api from "@/lib/api";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { useCustomWalletModal } from "@/components/providers/CustomWalletModalProvider";
 
 interface AutomationRule {
   id: string;
@@ -419,7 +419,7 @@ function RuleCard({
 
 export default function AutomationPage() {
   const { publicKey, connected } = useWallet();
-  const { setVisible } = useWalletModal();
+  const { setVisible } = useCustomWalletModal();
   const [rules, setRules] = useState<AutomationRule[]>([]);
   const [stats, setStats] = useState<AutomationStats | null>(null);
   const [history, setHistory] = useState<AutomationHistory[]>([]);

@@ -21,7 +21,7 @@ import {
   Link,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Platform, IntegrationStatus } from '../types';
+import { Platform, IntegrationStatus, LinkedAccount } from '../types';
 
 interface PlatformCardProps {
   platform: Platform;
@@ -31,6 +31,7 @@ interface PlatformCardProps {
   onTest: () => void;
   isConnecting?: boolean;
   isTesting?: boolean;
+  linkedAccount?: LinkedAccount;
 }
 
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -60,6 +61,7 @@ export function PlatformCard({
   onTest,
   isConnecting,
   isTesting,
+  linkedAccount,
 }: PlatformCardProps) {
   const [showActions, setShowActions] = useState(false);
   const Icon = iconMap[platform.icon] || Link;
@@ -107,8 +109,8 @@ export function PlatformCard({
         </div>
       </div>
 
-      {/* Category badge */}
-      <div className="mb-3">
+      {/* Category badge + linked account */}
+      <div className="mb-3 flex items-center gap-2">
         <span
           className={cn(
             'inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wider',
@@ -119,6 +121,11 @@ export function PlatformCard({
         >
           {platform.category}
         </span>
+        {linkedAccount && (
+          <span className="text-xs text-muted-foreground truncate">
+            @{linkedAccount.username || linkedAccount.userId}
+          </span>
+        )}
       </div>
 
       {/* Actions */}

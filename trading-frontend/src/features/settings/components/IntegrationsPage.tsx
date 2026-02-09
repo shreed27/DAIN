@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { motion } from 'framer-motion';
+import { useWallet } from '@solana/wallet-adapter-react';
 import {
   Plug,
   MessageCircle,
@@ -38,11 +39,15 @@ const categoryInfo = {
 };
 
 export function IntegrationsPage() {
+  const { publicKey, signMessage } = useWallet();
+  const walletAddress = publicKey?.toBase58();
+
   const {
     platforms,
     connectedPlatforms,
     notificationSettings,
     notificationEvents,
+    linkedAccounts,
     loading,
     connectingPlatform,
     testingPlatform,
@@ -52,11 +57,43 @@ export function IntegrationsPage() {
     testConnection,
     sendTestNotification,
     updateNotificationSettings,
+    // New pairing methods
+    generatePairingCode,
+    checkPairingStatus,
+    unlinkAccount,
+    // Polymarket wallet auth
+    connectPolymarketWithWallet,
   } = useIntegrations();
 
   const [selectedPlatform, setSelectedPlatform] = useState<Platform | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Filter out Slack and Email from messaging platforms
+  const filteredMessagingPlatforms = useMemo(() => {
+    if (!platforms?.messaging) return [];
+    return platforms.messaging.filter(p => p.id === 'telegram' || p.id === 'discord');
+  }, [platforms?.messaging]);
+
+  // Check if a platform is connected via linked accounts (for messaging)
+  const getLinkedAccountForPlatform = useCallback((platformId: string) => {
+    const channelMap: Record<string, string> = {
+      telegram: 'telegram',
+      discord: 'discord',
+    };
+    const channel = channelMap[platformId];
+    return linkedAccounts.find(acc => acc.channel === channel);
+  }, [linkedAccounts]);
+
+  // Handle Polymarket wallet connection
+  const handleConnectPolymarketWithWallet = useCallback(async (
+    walletSignMessage: (message: Uint8Array) => Promise<Uint8Array>
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!walletAddress) {
+      return { success: false, error: 'Wallet not connected' };
+    }
+    return connectPolymarketWithWallet(walletAddress, walletSignMessage);
+  }, [walletAddress, connectPolymarketWithWallet]);
 
   const showToast = (type: 'success' | 'error', message: string) => {
     setToast({ type, message });
@@ -190,28 +227,37 @@ export function IntegrationsPage() {
       {/* Platform Categories */}
       {platforms && (
         <>
-          {/* Messaging Platforms */}
+          {/* Messaging Platforms (Telegram & Discord only) */}
           <section>
             <div className="flex items-center gap-2 mb-4">
               <categoryInfo.messaging.icon className="w-5 h-5 text-blue-500" />
               <div>
                 <h2 className="text-lg font-semibold">{categoryInfo.messaging.title}</h2>
-                <p className="text-xs text-muted-foreground">{categoryInfo.messaging.description}</p>
+                <p className="text-xs text-muted-foreground">Link your Telegram or Discord to receive alerts via bot</p>
               </div>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              {platforms.messaging.map(platform => (
-                <PlatformCard
-                  key={platform.id}
-                  platform={platform}
-                  onConnect={() => handleConnect(platform)}
-                  onDisconnect={() => handleDisconnect(platform)}
-                  onConfigure={() => handleConfigure(platform)}
-                  onTest={() => handleTest(platform)}
-                  isConnecting={connectingPlatform === platform.id}
-                  isTesting={testingPlatform === platform.id}
-                />
-              ))}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {filteredMessagingPlatforms.map(platform => {
+                const linkedAccount = getLinkedAccountForPlatform(platform.id);
+                const isLinked = !!linkedAccount;
+                return (
+                  <PlatformCard
+                    key={platform.id}
+                    platform={{
+                      ...platform,
+                      connected: isLinked,
+                      status: isLinked ? 'connected' : 'disconnected',
+                    }}
+                    onConnect={() => handleConnect(platform)}
+                    onDisconnect={() => handleDisconnect(platform)}
+                    onConfigure={() => handleConfigure(platform)}
+                    onTest={() => handleTest(platform)}
+                    isConnecting={connectingPlatform === platform.id}
+                    isTesting={testingPlatform === platform.id}
+                    linkedAccount={linkedAccount}
+                  />
+                );
+              })}
             </div>
           </section>
 
@@ -287,6 +333,13 @@ export function IntegrationsPage() {
         }}
         onConnect={handleModalConnect}
         onTest={handleModalTest}
+        // Pairing props for messaging platforms
+        onGeneratePairingCode={generatePairingCode}
+        onCheckPairingStatus={checkPairingStatus}
+        // Wallet auth props for Polymarket
+        onConnectWithWallet={handleConnectPolymarketWithWallet}
+        walletAddress={walletAddress}
+        signMessage={signMessage}
       />
     </div>
   );

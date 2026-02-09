@@ -3,6 +3,7 @@
  *
  * Commands:
  * /pair - Request pairing (generates code)
+ * /pair <code> - Link Telegram/Discord to web wallet using pairing code
  * /pair-code <code> - Enter pairing code
  * /unpair - Remove your pairing
  * /pairing list - List pending requests
@@ -10,6 +11,8 @@
  * /pairing reject <code> - Reject pairing request
  * /pairing users - List paired users
  * /pairing remove <user> - Remove user pairing
+ * /pairing wallet - Show linked wallet
+ * /pairing unlink - Unlink wallet
  * /trust <user> owner - Grant owner trust
  * /trust <user> paired - Standard trust
  * /trust list - List trust levels
@@ -19,8 +22,10 @@ import {
   createPairingService,
   PairingService,
   TrustLevel,
+  WalletLink,
 } from '../../../pairing/index';
 import { logger } from '../../../utils/logger';
+import type { SkillExecutionContext } from '../../executor';
 
 let service: PairingService | null = null;
 
@@ -183,14 +188,126 @@ async function handleTrustList(channel: string): Promise<string> {
   return output;
 }
 
-export async function execute(args: string): Promise<string> {
+// =============================================================================
+// WALLET LINKING HANDLERS
+// =============================================================================
+
+/**
+ * Handle /pair <code> - Link chat account to web wallet using pairing code
+ */
+async function handleWalletLink(channel: string, chatUserId: string, code: string): Promise<string> {
+  const svc = getService();
+  if (!svc) return 'Pairing service not initialized.';
+
+  if (!code) {
+    return `**Wallet Linking**
+
+To link your Telegram/Discord account to your web wallet:
+
+1. Go to the web app and connect your Solana wallet
+2. Navigate to Settings → Integrations → Link Chat
+3. Copy the pairing code shown
+4. Run: \`/pair <code>\`
+
+Once linked, you can trade using the credentials stored on the web app.`;
+  }
+
+  // Validate the wallet pairing code
+  const link = await svc.validateWalletPairingCode(channel, chatUserId, code);
+  if (!link) {
+    return 'Invalid or expired pairing code. Please generate a new code from the web app.';
+  }
+
+  const walletShort = `${link.walletAddress.slice(0, 6)}...${link.walletAddress.slice(-4)}`;
+  return `**Wallet Linked Successfully!**
+
+Your ${channel} account is now linked to wallet \`${walletShort}\`.
+
+You can now:
+- Trade using \`/poly buy\`, \`/poly sell\` commands
+- View positions with \`/poly positions\`
+- Check balance with \`/poly balance\`
+
+Your trading credentials are securely stored on the web app.`;
+}
+
+/**
+ * Handle /pairing wallet - Show linked wallet
+ */
+async function handleShowWallet(channel: string, chatUserId: string): Promise<string> {
+  const svc = getService();
+  if (!svc) return 'Pairing service not initialized.';
+
+  const walletAddress = await svc.getWalletForChatUser(channel, chatUserId);
+  if (!walletAddress) {
+    return 'No wallet linked to this account. Use `/pair <code>` to link your web wallet.';
+  }
+
+  const walletShort = `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`;
+  return `**Linked Wallet**
+
+Wallet: \`${walletShort}\`
+Full address: \`${walletAddress}\`
+
+Use \`/pairing unlink\` to remove this link.`;
+}
+
+/**
+ * Handle /pairing unlink - Unlink wallet
+ */
+async function handleUnlinkWallet(channel: string, chatUserId: string): Promise<string> {
+  const svc = getService();
+  if (!svc) return 'Pairing service not initialized.';
+
+  const success = await svc.unlinkChatUser(channel, chatUserId);
+  if (!success) {
+    return 'No wallet was linked to this account.';
+  }
+
+  return 'Wallet unlinked successfully. You will need to re-link to trade using your web credentials.';
+}
+
+/**
+ * Handle /pairing links - Admin: list all wallet links
+ */
+async function handleListWalletLinks(): Promise<string> {
+  const svc = getService();
+  if (!svc) return 'Pairing service not initialized.';
+
+  const links = svc.listWalletLinks();
+  if (links.length === 0) {
+    return 'No wallet links registered.';
+  }
+
+  let output = `**Wallet Links** (${links.length})\n\n`;
+  for (const link of links) {
+    const walletShort = `${link.walletAddress.slice(0, 6)}...${link.walletAddress.slice(-4)}`;
+    output += `**${link.channel}:${link.chatUserId}**\n`;
+    output += `  Wallet: ${walletShort}\n`;
+    output += `  Linked: ${link.linkedAt.toLocaleString()}\n`;
+    output += `  Method: ${link.linkedBy}\n\n`;
+  }
+  return output;
+}
+
+// Pairing code format: 8 uppercase alphanumeric characters
+const PAIRING_CODE_REGEX = /^[A-Z0-9]{6,10}$/;
+
+export async function execute(args: string, context?: SkillExecutionContext): Promise<string> {
   const parts = args.trim().split(/\s+/);
   const command = parts[0]?.toLowerCase() || 'help';
   const rest = parts.slice(1);
 
-  // Default channel/userId for CLI context
-  const channel = 'cli';
-  const userId = 'cli-user';
+  // Use context if available, otherwise default to CLI
+  const channel = context?.platform || 'cli';
+  const userId = context?.userId || 'cli-user';
+
+  // Check if the first arg looks like a wallet pairing code
+  // This handles the case when user does "/pair ABC123"
+  const upperFirst = parts[0]?.toUpperCase() || '';
+  if (PAIRING_CODE_REGEX.test(upperFirst)) {
+    return handleWalletLink(channel, userId, upperFirst);
+  }
 
   switch (command) {
     case 'pair':
@@ -229,11 +346,26 @@ export async function execute(args: string): Promise<string> {
       }
       return 'Pairing service not initialized.';
 
+    // Wallet linking commands
+    case 'wallet':
+      return handleShowWallet(channel, userId);
+
+    case 'unlink':
+      return handleUnlinkWallet(channel, userId);
+
+    case 'links':
+      return handleListWalletLinks();
+
     case 'help':
     default:
       return `**Pairing Commands**
 
-**User Pairing:**
+**Wallet Linking (link chat to web wallet):**
+  /pair <code>                         - Link to web wallet using pairing code
+  /pairing wallet                      - Show linked wallet
+  /pairing unlink                      - Unlink wallet
+
+**User Pairing (access control):**
   /pairing pair                        - Request pairing (generates code)
   /pairing pair-code <code>            - Enter pairing code
   /pairing unpair                      - Remove your pairing
@@ -244,6 +376,7 @@ export async function execute(args: string): Promise<string> {
   /pairing reject <code>               - Reject pairing request
   /pairing users                       - List paired users
   /pairing remove <user>               - Remove user pairing
+  /pairing links                       - List all wallet links
   /pairing cleanup                     - Clean up expired requests
 
 **Trust Management:**
@@ -253,9 +386,38 @@ export async function execute(args: string): Promise<string> {
   }
 }
 
+/**
+ * Direct /pair handler for the /pair command (separate from /pairing)
+ * This is used for wallet linking: /pair <code>
+ */
+export async function handlePairCommand(args: string, context?: SkillExecutionContext): Promise<string> {
+  const code = args.trim();
+  const channel = context?.platform || 'cli';
+  const userId = context?.userId || 'cli-user';
+
+  // If a code is provided, try wallet linking first
+  if (code && code.length >= 6) {
+    return handleWalletLink(channel, userId, code);
+  }
+
+  // Otherwise, show help for wallet linking
+  return handleWalletLink(channel, userId, '');
+}
+
+/**
+ * Main handler that routes based on the command used
+ */
+async function mainHandler(args: string, context?: SkillExecutionContext): Promise<string> {
+  // The skill executor passes just the args after the command
+  // We need to check which command was invoked
+  // For /pair <code>, use wallet linking
+  // For /pairing <subcommand>, use the full execute function
+  return execute(args, context);
+}
+
 export default {
   name: 'pairing',
-  description: 'User pairing, authentication, and trust management',
+  description: 'User pairing, wallet linking, and trust management',
   commands: ['/pairing', '/pair', '/unpair', '/trust'],
-  handle: execute,
+  handle: mainHandler,
 };

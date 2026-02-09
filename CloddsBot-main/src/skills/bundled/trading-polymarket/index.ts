@@ -4,6 +4,7 @@
  * Wired to:
  *   - src/feeds/polymarket (createPolymarketFeed - WebSocket, market search, orderbook)
  *   - src/execution (createExecutionService - CLOB order placement/cancellation)
+ *   - src/credentials (per-user encrypted credential storage)
  *
  * Commands:
  * /poly search <query>                     - Search markets
@@ -21,6 +22,8 @@
 import type { PolymarketFeed } from '../../../feeds/polymarket';
 import type { ExecutionService } from '../../../execution';
 import type { TwapOrder, BracketOrder, TriggerOrderManager, AutoRedeemer } from '../../../execution';
+import type { PolymarketCredentials } from '../../../types';
+import type { SkillExecutionContext } from '../../executor';
 import { logger } from '../../../utils/logger';
 
 // =============================================================================
@@ -35,7 +38,10 @@ function formatNumber(n: number, decimals = 2): string {
 }
 
 let feedInstance: PolymarketFeed | null = null;
-let execInstance: ExecutionService | null = null;
+// Per-user execution service cache
+const userExecCache = new Map<string, ExecutionService>();
+// Default execution service (env vars)
+let defaultExecInstance: ExecutionService | null = null;
 
 async function getCircuitBreaker() {
   const { getGlobalCircuitBreaker } = await import('../../../execution/circuit-breaker');
@@ -57,8 +63,90 @@ async function getFeed(): Promise<PolymarketFeed> {
   return feedInstance;
 }
 
-function getExecution(): ExecutionService | null {
-  if (!execInstance) {
+/**
+ * Resolve user ID to wallet address if the user is a chat user with a linked wallet
+ * This allows chat users to use credentials stored against their web wallet
+ */
+async function resolveUserToWallet(userId: string | undefined, platform?: string): Promise<string | undefined> {
+  if (!userId || !platform) return userId;
+
+  // If userId already looks like a wallet address (starts with 0x or is a Solana pubkey), return as-is
+  if (userId.startsWith('0x') || (userId.length >= 32 && userId.length <= 44 && /^[A-HJ-NP-Za-km-z1-9]+$/.test(userId))) {
+    return userId;
+  }
+
+  try {
+    const { createPairingService } = await import('../../../pairing/index');
+    const { createDatabase } = await import('../../../db/index');
+    const db = createDatabase();
+    const pairingService = createPairingService(db);
+
+    const walletAddress = await pairingService.getWalletForChatUser(platform, userId);
+    if (walletAddress) {
+      logger.info({ userId, platform, walletAddress: walletAddress.slice(0, 8) + '...' },
+        'Resolved chat user to linked wallet');
+      return walletAddress;
+    }
+  } catch (err) {
+    logger.debug({ userId, platform, error: err instanceof Error ? err.message : String(err) },
+      'Failed to resolve user to wallet');
+  }
+
+  return userId;
+}
+
+/**
+ * Get execution service for a user.
+ * 1. If user is a chat user, resolve to their linked wallet address
+ * 2. Try per-user encrypted credentials from DB (using resolved wallet address)
+ * 3. Falls back to environment variables (default credentials)
+ */
+async function getExecution(userId?: string, platform?: string): Promise<ExecutionService | null> {
+  // Resolve chat userId to wallet address if linked
+  const resolvedUserId = await resolveUserToWallet(userId, platform);
+
+  // 1. Try per-user encrypted credentials first
+  if (resolvedUserId) {
+    // Check cache first
+    const cached = userExecCache.get(resolvedUserId);
+    if (cached) return cached;
+
+    try {
+      const { createCredentialsManager } = await import('../../../credentials/index');
+      const { createDatabase } = await import('../../../db/index');
+      const db = createDatabase();
+      const credManager = createCredentialsManager(db);
+
+      const creds = await credManager.getCredentials<PolymarketCredentials>(resolvedUserId, 'polymarket');
+      if (creds?.apiKey && creds?.apiSecret && creds?.apiPassphrase) {
+        logger.info({ userId, resolvedUserId, platform }, 'Using per-user Polymarket credentials');
+
+        const { createExecutionService } = await import('../../../execution');
+        const execService = createExecutionService({
+          polymarket: {
+            address: creds.funderAddress || '',
+            apiKey: creds.apiKey,
+            apiSecret: creds.apiSecret,
+            apiPassphrase: creds.apiPassphrase,
+            privateKey: creds.privateKey,
+            funderAddress: creds.funderAddress || '',
+            signatureType: creds.signatureType,
+          },
+          dryRun: process.env.DRY_RUN === 'true',
+        });
+
+        // Cache the execution service
+        userExecCache.set(resolvedUserId, execService);
+        return execService;
+      }
+    } catch (err) {
+      logger.warn({ userId, resolvedUserId, error: err instanceof Error ? err.message : String(err) },
+        'Failed to load user credentials, falling back to env vars');
+    }
+  }
+
+  // 2. Fallback to environment variables (default credentials)
+  if (!defaultExecInstance) {
     const apiKey = process.env.POLY_API_KEY;
     const apiSecret = process.env.POLY_API_SECRET;
     const passphrase = process.env.POLY_API_PASSPHRASE;
@@ -67,8 +155,8 @@ function getExecution(): ExecutionService | null {
     if (!apiKey || !apiSecret || !passphrase) return null;
 
     try {
-      const { createExecutionService } = require('../../../execution');
-      execInstance = createExecutionService({
+      const { createExecutionService } = await import('../../../execution');
+      defaultExecInstance = createExecutionService({
         polymarket: {
           address: funderAddress,
           apiKey,
@@ -84,7 +172,60 @@ function getExecution(): ExecutionService | null {
       return null;
     }
   }
-  return execInstance;
+  return defaultExecInstance;
+}
+
+/**
+ * Get user credentials directly (for balance/positions that need auth info)
+ */
+async function getUserCredentials(userId?: string, platform?: string): Promise<{
+  apiKey: string;
+  apiSecret: string;
+  apiPassphrase: string;
+  funderAddress: string;
+  privateKey?: string;
+} | null> {
+  // Resolve chat userId to wallet address if linked
+  const resolvedUserId = await resolveUserToWallet(userId, platform);
+
+  // 1. Try per-user credentials first
+  if (resolvedUserId) {
+    try {
+      const { createCredentialsManager } = await import('../../../credentials/index');
+      const { createDatabase } = await import('../../../db/index');
+      const db = createDatabase();
+      const credManager = createCredentialsManager(db);
+
+      const creds = await credManager.getCredentials<PolymarketCredentials>(resolvedUserId, 'polymarket');
+      if (creds?.apiKey && creds?.apiSecret && creds?.apiPassphrase) {
+        return {
+          apiKey: creds.apiKey,
+          apiSecret: creds.apiSecret,
+          apiPassphrase: creds.apiPassphrase,
+          funderAddress: creds.funderAddress || '',
+          privateKey: creds.privateKey,
+        };
+      }
+    } catch {
+      // Fall through to env vars
+    }
+  }
+
+  // 2. Fallback to env vars
+  const apiKey = process.env.POLY_API_KEY;
+  const apiSecret = process.env.POLY_API_SECRET;
+  const apiPassphrase = process.env.POLY_API_PASSPHRASE;
+  const funderAddress = process.env.POLY_FUNDER_ADDRESS || '';
+
+  if (!apiKey || !apiSecret || !apiPassphrase) return null;
+
+  return {
+    apiKey,
+    apiSecret,
+    apiPassphrase,
+    funderAddress,
+    privateKey: process.env.POLY_PRIVATE_KEY,
+  };
 }
 
 // =============================================================================
@@ -142,7 +283,15 @@ function helpText(): string {
     '  /poly allowance                         - Check USDC approval status',
     '  /poly orderbooks <token1> [token2] ...  - Batch fetch orderbooks',
     '',
-    '**Env vars:** POLY_API_KEY, POLY_API_SECRET, POLY_API_PASSPHRASE',
+    '**Credentials Setup (per-user):**',
+    '  /creds set polymarket api_key <key>',
+    '  /creds set polymarket api_secret <secret>',
+    '  /creds set polymarket api_passphrase <pass>',
+    '  /creds set polymarket private_key <key>     (for redemptions)',
+    '  /creds set polymarket funder_address <addr>',
+    '  /creds check polymarket                      (verify setup)',
+    '',
+    '**Fallback env vars:** POLY_API_KEY, POLY_API_SECRET, POLY_API_PASSPHRASE',
     '  Optional: POLY_PRIVATE_KEY, POLY_FUNDER_ADDRESS',
     '',
     '**Examples:**',
@@ -297,10 +446,10 @@ async function handleOrderbook(tokenId: string): Promise<string> {
 // TRADING HANDLERS
 // =============================================================================
 
-async function handleBuy(tokenId: string, sizeStr: string, priceStr: string): Promise<string> {
-  const exec = getExecution();
+async function handleBuy(tokenId: string, sizeStr: string, priceStr: string, userId?: string, platform?: string): Promise<string> {
+  const exec = await getExecution(userId, platform);
   if (!exec) {
-    return 'Set POLY_API_KEY, POLY_API_SECRET, and POLY_API_PASSPHRASE to trade on Polymarket.';
+    return 'No Polymarket credentials configured. Use `/creds set polymarket api_key <key>` etc. or set POLY_API_KEY, POLY_API_SECRET, and POLY_API_PASSPHRASE env vars.';
   }
 
   if (!tokenId || !sizeStr) {
@@ -410,10 +559,10 @@ async function handleBuy(tokenId: string, sizeStr: string, priceStr: string): Pr
   }
 }
 
-async function handleSell(tokenId: string, sizeStr: string, priceStr: string): Promise<string> {
-  const exec = getExecution();
+async function handleSell(tokenId: string, sizeStr: string, priceStr: string, userId?: string, platform?: string): Promise<string> {
+  const exec = await getExecution(userId, platform);
   if (!exec) {
-    return 'Set POLY_API_KEY, POLY_API_SECRET, and POLY_API_PASSPHRASE to trade on Polymarket.';
+    return 'No Polymarket credentials configured. Use `/creds set polymarket api_key <key>` etc. or set POLY_API_KEY, POLY_API_SECRET, and POLY_API_PASSPHRASE env vars.';
   }
 
   if (!tokenId || !sizeStr) {
@@ -515,10 +664,10 @@ async function handleSell(tokenId: string, sizeStr: string, priceStr: string): P
   }
 }
 
-async function handleOrders(): Promise<string> {
-  const exec = getExecution();
+async function handleOrders(userId?: string, platform?: string): Promise<string> {
+  const exec = await getExecution(userId, platform);
   if (!exec) {
-    return 'Set POLY_API_KEY, POLY_API_SECRET, and POLY_API_PASSPHRASE to view orders.';
+    return 'No Polymarket credentials configured. Use `/creds set polymarket api_key <key>` etc. or set env vars.';
   }
 
   try {
@@ -545,10 +694,10 @@ async function handleOrders(): Promise<string> {
   }
 }
 
-async function handleCancel(orderId: string): Promise<string> {
-  const exec = getExecution();
+async function handleCancel(orderId: string, userId?: string, platform?: string): Promise<string> {
+  const exec = await getExecution(userId, platform);
   if (!exec) {
-    return 'Set POLY_API_KEY, POLY_API_SECRET, and POLY_API_PASSPHRASE to cancel orders.';
+    return 'No Polymarket credentials configured. Use `/creds set polymarket api_key <key>` etc. or set env vars.';
   }
 
   if (!orderId) {
@@ -569,21 +718,19 @@ async function handleCancel(orderId: string): Promise<string> {
   }
 }
 
-async function handleBalance(): Promise<string> {
-  const funderAddress = process.env.POLY_FUNDER_ADDRESS;
+async function handleBalance(userId?: string, platform?: string): Promise<string> {
+  const userCreds = await getUserCredentials(userId, platform);
+  const funderAddress = userCreds?.funderAddress || process.env.POLY_FUNDER_ADDRESS;
   if (!funderAddress) {
-    return 'Set POLY_FUNDER_ADDRESS to check USDC balance.';
+    return 'No wallet address configured. Use `/creds set polymarket funder_address <address>` or set POLY_FUNDER_ADDRESS.';
   }
 
   try {
     // Try CLOB API first
     const { getPolymarketBalance, getPolymarketPositions } = await import('../../../execution/index');
-    const apiKey = process.env.POLY_API_KEY;
-    const apiSecret = process.env.POLY_API_SECRET;
-    const apiPassphrase = process.env.POLY_API_PASSPHRASE;
 
-    if (apiKey && apiSecret && apiPassphrase) {
-      const auth = { apiKey, apiSecret, apiPassphrase, address: funderAddress };
+    if (userCreds?.apiKey && userCreds?.apiSecret && userCreds?.apiPassphrase) {
+      const auth = { apiKey: userCreds.apiKey, apiSecret: userCreds.apiSecret, apiPassphrase: userCreds.apiPassphrase, address: funderAddress };
       const [balanceData, positions] = await Promise.all([
         getPolymarketBalance(auth, funderAddress),
         getPolymarketPositions(auth, funderAddress),
@@ -696,30 +843,31 @@ async function handleWhales(): Promise<string> {
 // ADVANCED ORDER HANDLERS
 // =============================================================================
 
-async function handleRedeem(conditionId?: string, tokenId?: string): Promise<string> {
-  const privateKey = process.env.POLY_PRIVATE_KEY;
-  const funderAddress = process.env.POLY_FUNDER_ADDRESS;
-  const apiKey = process.env.POLY_API_KEY;
-  const apiSecret = process.env.POLY_API_SECRET;
-  const passphrase = process.env.POLY_API_PASSPHRASE;
+async function handleRedeem(conditionId?: string, tokenId?: string, userId?: string, platform?: string): Promise<string> {
+  const userCreds = await getUserCredentials(userId, platform);
+
+  const privateKey = userCreds?.privateKey || process.env.POLY_PRIVATE_KEY;
+  const funderAddress = userCreds?.funderAddress || process.env.POLY_FUNDER_ADDRESS;
+  const apiKey = userCreds?.apiKey || process.env.POLY_API_KEY;
+  const apiSecret = userCreds?.apiSecret || process.env.POLY_API_SECRET;
+  const passphrase = userCreds?.apiPassphrase || process.env.POLY_API_PASSPHRASE;
 
   if (!privateKey || !funderAddress || !apiKey || !apiSecret || !passphrase) {
-    return 'Set POLY_PRIVATE_KEY, POLY_FUNDER_ADDRESS, POLY_API_KEY, POLY_API_SECRET, POLY_API_PASSPHRASE to redeem.';
+    return 'Missing credentials. Use `/creds set polymarket private_key <key>` etc. or set env vars to redeem.';
   }
 
   try {
-    if (!autoRedeemer) {
-      const { createAutoRedeemer } = await import('../../../execution');
-      autoRedeemer = createAutoRedeemer({
-        polymarketAuth: { address: funderAddress, apiKey, apiSecret, apiPassphrase: passphrase },
-        privateKey,
-        funderAddress,
-        dryRun: process.env.DRY_RUN === 'true',
-      });
-    }
+    // Create redeemer with user-specific credentials (don't reuse cached one)
+    const { createAutoRedeemer } = await import('../../../execution');
+    const redeemer = createAutoRedeemer({
+      polymarketAuth: { address: funderAddress, apiKey, apiSecret, apiPassphrase: passphrase },
+      privateKey,
+      funderAddress,
+      dryRun: process.env.DRY_RUN === 'true',
+    });
 
     if (conditionId && tokenId) {
-      const result = await autoRedeemer.redeemPosition(conditionId, tokenId);
+      const result = await redeemer.redeemPosition(conditionId, tokenId);
       if (result.success) {
         return [
           '**Redemption Successful**',
@@ -734,7 +882,7 @@ async function handleRedeem(conditionId?: string, tokenId?: string): Promise<str
       return `Redemption failed: ${result.error}`;
     }
 
-    const results = await autoRedeemer.redeemAll();
+    const results = await redeemer.redeemAll();
     if (results.length === 0) {
       return 'No resolved positions to redeem.';
     }
@@ -758,7 +906,7 @@ async function handleRedeem(conditionId?: string, tokenId?: string): Promise<str
   }
 }
 
-async function handleTwap(subCmdOrSide: string, tokenIdOrId?: string, totalStr?: string, priceStr?: string, slicesStr?: string, intervalStr?: string): Promise<string> {
+async function handleTwap(subCmdOrSide: string, tokenIdOrId?: string, totalStr?: string, priceStr?: string, slicesStr?: string, intervalStr?: string, userId?: string, platform?: string): Promise<string> {
   // Sub-commands: status, cancel
   if (subCmdOrSide === 'status') {
     if (activeTwaps.size === 0) return 'No active TWAP orders.';
@@ -786,9 +934,9 @@ async function handleTwap(subCmdOrSide: string, tokenIdOrId?: string, totalStr?:
     return 'Usage: /poly twap <buy|sell> <token> <total> <price> [slices] [interval-sec]\n  /poly twap status\n  /poly twap cancel <id>';
   }
 
-  const exec = getExecution();
+  const exec = await getExecution(userId, platform);
   if (!exec) {
-    return 'Set POLY_API_KEY, POLY_API_SECRET, and POLY_API_PASSPHRASE to trade.';
+    return 'No Polymarket credentials configured. Use `/creds set polymarket api_key <key>` etc. or set env vars.';
   }
 
   const tokenId = tokenIdOrId;
@@ -837,7 +985,7 @@ async function handleTwap(subCmdOrSide: string, tokenIdOrId?: string, totalStr?:
   }
 }
 
-async function handleBracket(subCmdOrToken: string, sizeStrOrId?: string, tpPriceStr?: string, slPriceStr?: string): Promise<string> {
+async function handleBracket(subCmdOrToken: string, sizeStrOrId?: string, tpPriceStr?: string, slPriceStr?: string, userId?: string, platform?: string): Promise<string> {
   // Sub-commands: status, cancel
   if (subCmdOrToken === 'status') {
     if (activeBrackets.size === 0) return 'No active bracket orders.';
@@ -860,9 +1008,9 @@ async function handleBracket(subCmdOrToken: string, sizeStrOrId?: string, tpPric
   }
 
   // Create new bracket: bracket <token> <size> <tp> <sl>
-  const exec = getExecution();
+  const exec = await getExecution(userId, platform);
   if (!exec) {
-    return 'Set POLY_API_KEY, POLY_API_SECRET, and POLY_API_PASSPHRASE to trade.';
+    return 'No Polymarket credentials configured. Use `/creds set polymarket api_key <key>` etc. or set env vars.';
   }
 
   const tokenId = subCmdOrToken;
@@ -914,7 +1062,7 @@ async function handleBracket(subCmdOrToken: string, sizeStrOrId?: string, tpPric
   }
 }
 
-async function handleTrigger(subCmd: string, args: string[]): Promise<string> {
+async function handleTrigger(subCmd: string, args: string[], userId?: string, platform?: string): Promise<string> {
   // List triggers
   if (subCmd === 'list' || !subCmd) {
     if (!triggerManager) return 'No trigger orders. Use /poly trigger buy or /poly trigger sell to create one.';
@@ -956,9 +1104,9 @@ async function handleTrigger(subCmd: string, args: string[]): Promise<string> {
     ].join('\n');
   }
 
-  const exec = getExecution();
+  const exec = await getExecution(userId, platform);
   if (!exec) {
-    return 'Set POLY_API_KEY, POLY_API_SECRET, and POLY_API_PASSPHRASE to trade.';
+    return 'No Polymarket credentials configured. Use `/creds set polymarket api_key <key>` etc. or set env vars.';
   }
 
   const [tokenId, sizeStr, triggerPriceStr, limitPriceStr] = args;
@@ -1012,9 +1160,11 @@ async function handleTrigger(subCmd: string, args: string[]): Promise<string> {
 // MAIN HANDLER
 // =============================================================================
 
-async function execute(args: string): Promise<string> {
+async function execute(args: string, context?: SkillExecutionContext): Promise<string> {
   const parts = args.trim().split(/\s+/);
   const cmd = parts[0]?.toLowerCase() || 'help';
+  const userId = context?.userId;
+  const platform = context?.platform;  // telegram, discord, etc.
 
   try {
     switch (cmd) {
@@ -1033,42 +1183,42 @@ async function execute(args: string): Promise<string> {
 
       case 'buy':
       case 'b':
-        return handleBuy(parts[1], parts[2], parts[3]);
+        return handleBuy(parts[1], parts[2], parts[3], userId, platform);
 
       case 'sell':
-        return handleSell(parts[1], parts[2], parts[3]);
+        return handleSell(parts[1], parts[2], parts[3], userId, platform);
 
       case 'positions':
       case 'pos':
       case 'orders':
       case 'o':
-        return handleOrders();
+        return handleOrders(userId, platform);
 
       case 'cancel':
-        return handleCancel(parts[1]);
+        return handleCancel(parts[1], userId, platform);
 
       case 'balance':
       case 'bal':
-        return handleBalance();
+        return handleBalance(userId, platform);
 
       case 'whales':
       case 'whale':
         return handleWhales();
 
       case 'redeem':
-        return handleRedeem(parts[1], parts[2]);
+        return handleRedeem(parts[1], parts[2], userId, platform);
 
       case 'twap':
-        return handleTwap(parts[1], parts[2], parts[3], parts[4], parts[5], parts[6]);
+        return handleTwap(parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], userId, platform);
 
       case 'bracket':
-        return handleBracket(parts[1], parts[2], parts[3], parts[4]);
+        return handleBracket(parts[1], parts[2], parts[3], parts[4], userId, platform);
 
       case 'trigger':
-        return handleTrigger(parts[1], parts.slice(2));
+        return handleTrigger(parts[1], parts.slice(2), userId, platform);
 
       case 'triggers':
-        return handleTrigger('list', []);
+        return handleTrigger('list', [], userId, platform);
 
       case 'route':
       case 'compare': {
@@ -1130,9 +1280,9 @@ async function execute(args: string): Promise<string> {
       case 'fills': {
         // /poly fills [status|stop|clear]
         const subcommand = parts[1]?.toLowerCase();
-        const exec = getExecution();
+        const exec = await getExecution(userId, platform);
         if (!exec) {
-          return 'Polymarket trading not configured. Set env vars and restart.';
+          return 'No Polymarket credentials configured. Use `/creds set polymarket api_key <key>` etc. or set env vars.';
         }
 
         if (subcommand === 'status') {
@@ -1200,17 +1350,15 @@ async function execute(args: string): Promise<string> {
       case 'history': {
         // /poly trades [limit]
         const limit = parseInt(parts[1]) || 20;
-        const apiKey = process.env.POLY_API_KEY;
-        const apiSecret = process.env.POLY_API_SECRET;
-        const apiPassphrase = process.env.POLY_API_PASSPHRASE;
+        const userCreds = await getUserCredentials(userId, platform);
 
-        if (!apiKey || !apiSecret || !apiPassphrase) {
-          return 'Set POLY_API_KEY, POLY_API_SECRET, POLY_API_PASSPHRASE to view trades.';
+        if (!userCreds?.apiKey || !userCreds?.apiSecret || !userCreds?.apiPassphrase) {
+          return 'No Polymarket credentials configured. Use `/creds set polymarket api_key <key>` etc. or set env vars.';
         }
 
         try {
           const { getPolymarketTrades } = await import('../../../execution/index');
-          const auth = { apiKey, apiSecret, apiPassphrase, address: process.env.POLY_FUNDER_ADDRESS || '' };
+          const auth = { apiKey: userCreds.apiKey, apiSecret: userCreds.apiSecret, apiPassphrase: userCreds.apiPassphrase, address: userCreds.funderAddress || '' };
           const trades = await getPolymarketTrades(auth, limit);
 
           if (trades.length === 0) {
@@ -1237,9 +1385,9 @@ async function execute(args: string): Promise<string> {
       case 'hb': {
         // /poly heartbeat [start|stop|status]
         const subcommand = parts[1]?.toLowerCase() || 'start';
-        const exec = getExecution();
+        const exec = await getExecution(userId, platform);
         if (!exec) {
-          return 'Polymarket trading not configured. Set env vars and restart.';
+          return 'No Polymarket credentials configured. Use `/creds set polymarket api_key <key>` etc. or set env vars.';
         }
 
         if (subcommand === 'status') {
@@ -1271,9 +1419,9 @@ async function execute(args: string): Promise<string> {
       case 'settlements':
       case 'settle': {
         // /poly settlements - Show pending settlements for resolved markets
-        const exec = getExecution();
+        const exec = await getExecution(userId, platform);
         if (!exec) {
-          return 'Polymarket trading not configured. Set env vars and restart.';
+          return 'No Polymarket credentials configured. Use `/creds set polymarket api_key <key>` etc. or set env vars.';
         }
 
         const settlements = await exec.getPendingSettlements();
@@ -1296,9 +1444,9 @@ async function execute(args: string): Promise<string> {
       case 'allowance':
       case 'approval': {
         // /poly allowance - Check USDC approval status for trading
-        const exec = getExecution();
+        const exec = await getExecution(userId, platform);
         if (!exec) {
-          return 'Polymarket trading not configured. Set env vars and restart.';
+          return 'No Polymarket credentials configured. Use `/creds set polymarket api_key <key>` etc. or set env vars.';
         }
 
         const allowance = await exec.getUSDCAllowance();
@@ -1319,9 +1467,9 @@ async function execute(args: string): Promise<string> {
           return 'Usage: `/poly orderbooks <tokenId1> [tokenId2] ...`\n\nFetch orderbooks for multiple tokens in one call.';
         }
 
-        const exec = getExecution();
+        const exec = await getExecution(userId, platform);
         if (!exec) {
-          return 'Polymarket trading not configured. Set env vars and restart.';
+          return 'No Polymarket credentials configured. Use `/creds set polymarket api_key <key>` etc. or set env vars.';
         }
 
         const orderbooks = await exec.getOrderbooksBatch(tokenIds);

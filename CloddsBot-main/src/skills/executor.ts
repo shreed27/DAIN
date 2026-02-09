@@ -143,13 +143,27 @@ const SKILL_MANIFEST: string[] = [
 // TYPES
 // =============================================================================
 
+/** Execution context passed to skill handlers */
+export interface SkillExecutionContext {
+  /** User ID (from message.userId) */
+  userId?: string;
+  /** Session key */
+  sessionKey?: string;
+  /** Chat ID */
+  chatId?: string;
+  /** Platform (telegram, discord, etc.) */
+  platform?: string;
+  /** Chat type (dm or group) */
+  chatType?: 'dm' | 'group';
+}
+
 export interface SkillHandler {
   name: string;
   description: string;
   commands: string[] | Array<{ name: string; description: string; usage: string }>;
   /** Handler function (can be named 'handle' or 'handler') */
-  handle?: (args: string) => Promise<string>;
-  handler?: (args: string) => Promise<string>;
+  handle?: (args: string, context?: SkillExecutionContext) => Promise<string>;
+  handler?: (args: string, context?: SkillExecutionContext) => Promise<string>;
   /** Optional requirements that must be met before the handler runs */
   requires?: {
     env?: string[];
@@ -161,7 +175,7 @@ interface NormalizedSkillHandler {
   name: string;
   description: string;
   commands: string[];
-  handle: (args: string) => Promise<string>;
+  handle: (args: string, context?: SkillExecutionContext) => Promise<string>;
 }
 
 /** Normalize skill handler to consistent interface */
@@ -179,16 +193,16 @@ function normalizeSkill(skill: SkillHandler): NormalizedSkillHandler {
 
   // Wrap handler with env-var requirement checking if declared
   const requiredEnv = skill.requires?.env;
-  let wrappedHandle: (args: string) => Promise<string>;
+  let wrappedHandle: (args: string, context?: SkillExecutionContext) => Promise<string>;
 
   if (requiredEnv && requiredEnv.length > 0) {
     const boundHandle = handleFn;
-    wrappedHandle = async (args: string): Promise<string> => {
+    wrappedHandle = async (args: string, context?: SkillExecutionContext): Promise<string> => {
       const missing = requiredEnv.filter((v) => !process.env[v]);
       if (missing.length > 0) {
         return `⚠ ${skill.name} requires environment variables to be set:\n\n${missing.map((v) => `  • ${v}`).join('\n')}\n\nSet them in your environment or .env file to use this skill.`;
       }
-      return boundHandle(args);
+      return boundHandle(args, context);
     };
   } else {
     wrappedHandle = handleFn;
@@ -374,9 +388,13 @@ export interface SkillExecutionResult {
  * Execute a skill command
  *
  * @param message - The full message text (e.g., "/bf balance")
+ * @param context - Optional execution context with user info
  * @returns Result of execution
  */
-export async function executeSkillCommand(message: string): Promise<SkillExecutionResult> {
+export async function executeSkillCommand(
+  message: string,
+  context?: SkillExecutionContext
+): Promise<SkillExecutionResult> {
   // Ensure skills are loaded on first invocation
   await initializeSkills();
 
@@ -399,8 +417,8 @@ export async function executeSkillCommand(message: string): Promise<SkillExecuti
   }
 
   try {
-    logger.info({ skill: skill.name, command, args }, 'Executing skill command');
-    const response = await skill.handle(args);
+    logger.info({ skill: skill.name, command, args, userId: context?.userId }, 'Executing skill command');
+    const response = await skill.handle(args, context);
     return {
       handled: true,
       response,

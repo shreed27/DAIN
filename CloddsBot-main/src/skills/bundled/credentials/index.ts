@@ -8,7 +8,9 @@
  * /creds check <platform> - Verify credentials work
  */
 
-async function execute(args: string): Promise<string> {
+import type { SkillExecutionContext } from '../../executor';
+
+async function execute(args: string, context?: SkillExecutionContext): Promise<string> {
   const parts = args.trim().split(/\s+/);
   const cmd = parts[0]?.toLowerCase() || 'help';
 
@@ -17,7 +19,8 @@ async function execute(args: string): Promise<string> {
     const { createDatabase } = await import('../../../db/index');
     const db = createDatabase();
     const manager = createCredentialsManager(db);
-    const userId = 'default';
+    // Use userId from context, fall back to 'default' for CLI usage
+    const userId = context?.userId || 'default';
 
     switch (cmd) {
       case 'list':

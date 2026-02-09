@@ -11,23 +11,35 @@ import type {
   OutgoingMessage,
   IncomingMessage,
   MessageAttachment,
+  MessageButton,
   ReactionMessage,
   PollMessage,
 } from '../../types';
 import type { PairingService } from '../../pairing/index';
 import type { CommandRegistry } from '../../commands/registry';
+import type { TelegramMenuService } from '../../telegram-menu';
 import { RateLimiter } from '../../security';
 import { sleep } from '../../infra/retry';
+
+// Extended adapter interface with menu service support
+export interface TelegramChannelAdapter extends ChannelAdapter {
+  setMenuService(service: TelegramMenuService): void;
+  editMessageWithButtons(message: OutgoingMessage & { messageId: string }): Promise<void>;
+  editMessageReplyMarkup(chatId: string, messageId: string, buttons: MessageButton[][]): Promise<void>;
+}
 
 export async function createTelegramChannel(
   config: NonNullable<Config['channels']['telegram']>,
   callbacks: ChannelCallbacks,
   pairing?: PairingService,
   commands?: CommandRegistry
-): Promise<ChannelAdapter> {
+): Promise<TelegramChannelAdapter> {
   const bot = new Bot(config.botToken);
   const rateLimitConfig = config.rateLimit;
   const rateLimiter = rateLimitConfig ? new RateLimiter(rateLimitConfig) : null;
+
+  // Menu service for interactive menus
+  let menuService: TelegramMenuService | null = null;
 
   // Static allowlist from config (always paired)
   const staticAllowlist = new Set<string>(config.allowFrom || []);
@@ -99,6 +111,7 @@ export async function createTelegramChannel(
   // Handle /start command
   bot.command('start', async (ctx) => {
     const userId = ctx.from?.id?.toString() || '';
+    const chatId = ctx.chat?.id?.toString() || '';
     const username = ctx.from?.username;
     const args = ctx.match;
 
@@ -119,7 +132,17 @@ export async function createTelegramChannel(
       }
     }
 
-    // Welcome message
+    // Route to interactive menu service if available
+    if (menuService) {
+      try {
+        await menuService.handleStart(userId, chatId);
+        return;
+      } catch (error) {
+        logger.warn({ error }, 'Menu service handleStart failed, falling back to default');
+      }
+    }
+
+    // Fallback welcome message
     await callTelegramApi(ctx.chat?.id, 'reply(welcome)', () =>
       ctx.reply(
         `🎲 *Welcome to Clodds!*\n\n` +
@@ -431,6 +454,19 @@ export async function createTelegramChannel(
       cleanedText = cleanedText.replace(new RegExp(`@${botUsername}`, 'g'), '').trim();
     }
 
+    // Check if menu service wants to handle text input (for search, wallet address input, etc.)
+    if (menuService && !isGroup && cleanedText && !cleanedText.startsWith('/')) {
+      try {
+        const handled = await menuService.handleTextInput(userId, msg.chat.id.toString(), cleanedText);
+        if (handled) {
+          logger.debug({ userId }, 'Message handled by menu service');
+          return;
+        }
+      } catch (error) {
+        logger.warn({ error }, 'Menu service text input handling failed');
+      }
+    }
+
     const incomingMessage: IncomingMessage = {
       id: msg.message_id.toString(),
       platform: 'telegram',
@@ -455,30 +491,51 @@ export async function createTelegramChannel(
   bot.on('callback_query:data', async (ctx) => {
     const data = ctx.callbackQuery.data;
     const userId = ctx.from?.id?.toString() || '';
-    logger.info({ userId, data }, 'Callback query received');
+    const chatId = ctx.chat?.id?.toString() || '';
+    const messageId = ctx.callbackQuery.message?.message_id?.toString();
+
+    logger.info({ userId, data, messageId }, 'Callback query received');
 
     await ctx.answerCallbackQuery();
 
-    // Handle different callback types
+    // Route to menu service for interactive menu callbacks
+    if (menuService) {
+      // Menu service handles: menu:*, search:*, market:*, buy:*, sell:*, order:*, etc.
+      const menuPrefixes = ['menu:', 'search:', 'buy:', 'sell:', 'limitb:', 'limits:', 'order:',
+        'pos:', 'cancel:', 'orders:', 'wallet:', 'copy:', 'refresh', 'back', 'noop'];
+      const isMenuCallback = menuPrefixes.some(prefix => data.startsWith(prefix) || data === prefix.slice(0, -1));
+
+      if (isMenuCallback) {
+        try {
+          await menuService.handleCallback(userId, chatId, messageId, data);
+          return;
+        } catch (error) {
+          logger.error({ error, data }, 'Menu service callback failed');
+        }
+      }
+    }
+
+    // Fallback: Handle legacy callback types
     if (data.startsWith('alert_delete:')) {
       const alertId = data.split(':')[1];
       const incomingMessage: IncomingMessage = {
         id: ctx.callbackQuery.id,
         platform: 'telegram',
         userId,
-        chatId: ctx.chat?.id?.toString() || '',
+        chatId,
         chatType: ctx.chat?.type === 'private' ? 'dm' : 'group',
         text: `/alert delete ${alertId}`,
         timestamp: new Date(),
       };
       await callbacks.onMessage(incomingMessage);
-    } else if (data.startsWith('market:')) {
+    } else if (data.startsWith('market:') && !menuService) {
+      // Only handle market: prefix if menu service is not handling it
       const marketId = data.split(':')[1];
       const incomingMessage: IncomingMessage = {
         id: ctx.callbackQuery.id,
         platform: 'telegram',
         userId,
-        chatId: ctx.chat?.id?.toString() || '',
+        chatId,
         chatType: ctx.chat?.type === 'private' ? 'dm' : 'group',
         text: `/price ${marketId}`,
         timestamp: new Date(),
@@ -727,15 +784,98 @@ export async function createTelegramChannel(
     async editMessage(message: OutgoingMessage & { messageId: string }) {
       const chatId = parseInt(message.chatId, 10);
       const messageId = parseInt(message.messageId, 10);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const options: any = {
+        parse_mode: message.parseMode === 'HTML'
+          ? 'HTML'
+          : message.parseMode === 'MarkdownV2'
+            ? 'MarkdownV2'
+            : 'Markdown',
+      };
+
+      // Include buttons if provided
+      if (message.buttons && message.buttons.length > 0) {
+        options.reply_markup = {
+          inline_keyboard: message.buttons.map((row) =>
+            row.map((btn) => {
+              if (btn.url) {
+                return { text: btn.text, url: btn.url };
+              }
+              return { text: btn.text, callback_data: btn.callbackData || 'noop' };
+            })
+          ),
+        };
+      }
+
       await callTelegramApi(chatId, 'editMessageText', () =>
-        bot.api.editMessageText(chatId, messageId, message.text, {
-          parse_mode: message.parseMode === 'HTML'
-            ? 'HTML'
-            : message.parseMode === 'MarkdownV2'
-              ? 'MarkdownV2'
-              : 'Markdown',
+        bot.api.editMessageText(chatId, messageId, message.text, options)
+      );
+    },
+
+    /**
+     * Edit message text and buttons together
+     */
+    async editMessageWithButtons(message: OutgoingMessage & { messageId: string }) {
+      const chatId = parseInt(message.chatId, 10);
+      const messageId = parseInt(message.messageId, 10);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const options: any = {
+        parse_mode: message.parseMode === 'HTML'
+          ? 'HTML'
+          : message.parseMode === 'MarkdownV2'
+            ? 'MarkdownV2'
+            : 'Markdown',
+      };
+
+      if (message.buttons && message.buttons.length > 0) {
+        options.reply_markup = {
+          inline_keyboard: message.buttons.map((row) =>
+            row.map((btn) => {
+              if (btn.url) {
+                return { text: btn.text, url: btn.url };
+              }
+              return { text: btn.text, callback_data: btn.callbackData || 'noop' };
+            })
+          ),
+        };
+      }
+
+      await callTelegramApi(chatId, 'editMessageText', () =>
+        bot.api.editMessageText(chatId, messageId, message.text, options)
+      );
+    },
+
+    /**
+     * Edit only the inline keyboard (buttons) of a message
+     */
+    async editMessageReplyMarkup(chatId: string, messageId: string, buttons: MessageButton[][]) {
+      const numChatId = parseInt(chatId, 10);
+      const numMessageId = parseInt(messageId, 10);
+
+      const inlineKeyboard = buttons.map((row) =>
+        row.map((btn) => {
+          if (btn.url) {
+            return { text: btn.text, url: btn.url };
+          }
+          return { text: btn.text, callback_data: btn.callbackData || 'noop' };
         })
       );
+
+      await callTelegramApi(numChatId, 'editMessageReplyMarkup', () =>
+        bot.api.editMessageReplyMarkup(numChatId, numMessageId, {
+          reply_markup: { inline_keyboard: inlineKeyboard },
+        })
+      );
+    },
+
+    /**
+     * Set the menu service for interactive menus
+     */
+    setMenuService(service: TelegramMenuService) {
+      menuService = service;
+      logger.info('Telegram menu service registered');
     },
 
     /**

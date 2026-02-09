@@ -9,7 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import api from "@/lib/api";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { useCustomWalletModal } from "@/components/providers/CustomWalletModalProvider";
 
 interface BacktestStrategy {
     id: string;
@@ -50,7 +50,7 @@ interface BacktestResult {
 
 export default function BacktestPage() {
     const { publicKey, connected } = useWallet();
-    const { setVisible } = useWalletModal();
+    const { setVisible } = useCustomWalletModal();
     const [strategies, setStrategies] = useState<BacktestStrategy[]>([]);
     const [runs, setRuns] = useState<BacktestRun[]>([]);
     const [selectedRun, setSelectedRun] = useState<BacktestRun | null>(null);

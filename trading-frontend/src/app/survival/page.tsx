@@ -9,7 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import api from "@/lib/api";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { useCustomWalletModal } from "@/components/providers/CustomWalletModalProvider";
 
 interface SurvivalConfig {
     id: string;
@@ -64,7 +64,7 @@ const STATE_CONFIGS: StateConfig[] = [
 
 export default function SurvivalPage() {
     const { publicKey, connected } = useWallet();
-    const { setVisible } = useWalletModal();
+    const { setVisible } = useCustomWalletModal();
     const [config, setConfig] = useState<SurvivalConfig | null>(null);
     const [metrics, setMetrics] = useState<SurvivalMetrics | null>(null);
     const [history, setHistory] = useState<StateHistory[]>([]);

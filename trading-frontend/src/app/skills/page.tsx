@@ -9,7 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import api from "@/lib/api";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { useCustomWalletModal } from "@/components/providers/CustomWalletModalProvider";
 
 interface Skill {
     id: string;
@@ -65,7 +65,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 export default function SkillsPage() {
     const { publicKey, connected } = useWallet();
-    const { setVisible } = useWalletModal();
+    const { setVisible } = useCustomWalletModal();
     const [skills, setSkills] = useState<Skill[]>([]);
     const [skillsByCategory, setSkillsByCategory] = useState<Record<string, Skill[]>>({});
     const [executions, setExecutions] = useState<SkillExecution[]>([]);

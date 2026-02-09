@@ -9,7 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import api from "@/lib/api";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { useCustomWalletModal } from "@/components/providers/CustomWalletModalProvider";
 
 interface EVMChain {
     id: string;
@@ -77,7 +77,7 @@ const CHAINS: EVMChain[] = [
 
 export default function EVMPage() {
     const { publicKey, connected } = useWallet();
-    const { setVisible } = useWalletModal();
+    const { setVisible } = useCustomWalletModal();
     const [selectedChain, setSelectedChain] = useState<EVMChain>(CHAINS[0]);
     const [wallets, setWallets] = useState<EVMWallet[]>([]);
     const [balances, setBalances] = useState<EVMBalance[]>([]);

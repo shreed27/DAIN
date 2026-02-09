@@ -9,7 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import api from "@/lib/api";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { useCustomWalletModal } from "@/components/providers/CustomWalletModalProvider";
 
 interface ArbitrageOpportunity {
     id: string;
@@ -52,7 +52,7 @@ interface ArbitrageConfig {
 
 export default function ArbitragePage() {
     const { publicKey, connected } = useWallet();
-    const { setVisible } = useWalletModal();
+    const { setVisible } = useCustomWalletModal();
     const [opportunities, setOpportunities] = useState<ArbitrageOpportunity[]>([]);
     const [executions, setExecutions] = useState<ArbitrageExecution[]>([]);
     const [config, setConfig] = useState<ArbitrageConfig | null>(null);

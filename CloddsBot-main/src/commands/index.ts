@@ -17,7 +17,7 @@ import { SessionManager } from '../sessions/index';
 import { Session, IncomingMessage } from '../types';
 import { logger } from '../utils/logger';
 import { SkillRegistry, InstalledSkill } from '../skills/index';
-import { executeSkillCommand, isSkillCommand } from '../skills/executor';
+import { executeSkillCommand, isSkillCommand, SkillExecutionContext } from '../skills/executor';
 
 export interface CommandResult {
   handled: boolean;
@@ -319,10 +319,19 @@ export function createCommandsService(
               return { handled: false };
             }
 
-            // Execute the skill command
-            const result = await executeSkillCommand(text);
+            // Build execution context with user info
+            const executionContext: SkillExecutionContext = {
+              userId: message.userId,
+              sessionKey: session.key,
+              chatId: message.chatId,
+              platform: message.platform,
+              chatType: message.chatType,
+            };
+
+            // Execute the skill command with context
+            const result = await executeSkillCommand(text, executionContext);
             if (result.handled) {
-              logger.info({ command, skill: result.skill }, 'Skill command executed');
+              logger.info({ command, skill: result.skill, userId: message.userId }, 'Skill command executed');
               return {
                 handled: true,
                 action: 'skill_command',

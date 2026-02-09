@@ -157,6 +157,23 @@ export interface PairedUser {
   isOwner: boolean;
 }
 
+/** Wallet link - maps chat userId to Solana wallet address */
+export interface WalletLink {
+  channel: string;  // e.g., 'telegram', 'discord'
+  chatUserId: string;  // Platform-specific user ID
+  walletAddress: string;  // Solana wallet address (also used as credential key)
+  linkedAt: Date;
+  linkedBy: 'pairing_code' | 'manual';
+}
+
+/** Pending wallet pairing code */
+export interface WalletPairingRequest {
+  code: string;
+  walletAddress: string;
+  createdAt: Date;
+  expiresAt: Date;
+}
+
 /** Database row type (SQLite stores dates as strings, booleans as integers) */
 interface PairedUserRow {
   channel: string;
@@ -165,6 +182,23 @@ interface PairedUserRow {
   pairedAt: string;
   pairedBy: string;
   isOwner: number;
+}
+
+/** Database row type for wallet links */
+interface WalletLinkRow {
+  channel: string;
+  chatUserId: string;
+  walletAddress: string;
+  linkedAt: string;
+  linkedBy: string;
+}
+
+/** Database row type for wallet pairing requests */
+interface WalletPairingRequestRow {
+  code: string;
+  walletAddress: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 /** Pairing service configuration */
@@ -231,6 +265,28 @@ export interface PairingService {
 
   /** Cleanup expired requests */
   cleanupExpired(): void;
+
+  // ==========================================================================
+  // WALLET LINKING - Maps chat userId to Solana wallet address for credentials
+  // ==========================================================================
+
+  /** Create a wallet pairing code (called from web frontend) */
+  createWalletPairingCode(walletAddress: string): Promise<string>;
+
+  /** Validate and consume a wallet pairing code (called from chat bot) */
+  validateWalletPairingCode(channel: string, chatUserId: string, code: string): Promise<WalletLink | null>;
+
+  /** Get wallet address for a chat user */
+  getWalletForChatUser(channel: string, chatUserId: string): Promise<string | null>;
+
+  /** Get all chat users linked to a wallet */
+  getChatUsersForWallet(walletAddress: string): Promise<WalletLink[]>;
+
+  /** Unlink a chat user from their wallet */
+  unlinkChatUser(channel: string, chatUserId: string): Promise<boolean>;
+
+  /** List all wallet links (for debugging/admin) */
+  listWalletLinks(): WalletLink[];
 }
 
 /**
@@ -288,9 +344,39 @@ export function createPairingService(db: Database, configInput?: PairingConfig):
     ON paired_users(channel)
   `);
 
+  // Wallet linking tables
+  db.run(`
+    CREATE TABLE IF NOT EXISTS wallet_pairing_codes (
+      code TEXT PRIMARY KEY,
+      walletAddress TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      expiresAt TEXT NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS wallet_links (
+      channel TEXT NOT NULL,
+      chatUserId TEXT NOT NULL,
+      walletAddress TEXT NOT NULL,
+      linkedAt TEXT NOT NULL,
+      linkedBy TEXT NOT NULL,
+      PRIMARY KEY (channel, chatUserId)
+    )
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_wallet_links_wallet
+    ON wallet_links(walletAddress)
+  `);
+
   // In-memory cache (also persisted to DB)
   const pendingRequests = new Map<string, PairingRequest>(); // code -> request
   const pairedUsers = new Map<string, PairedUser>(); // `${channel}:${userId}` -> user
+
+  // Wallet linking caches
+  const walletPairingCodes = new Map<string, WalletPairingRequest>(); // code -> request
+  const walletLinks = new Map<string, WalletLink>(); // `${channel}:${chatUserId}` -> link
 
   // Load from DB on startup
   const loadFromDb = () => {
@@ -322,7 +408,38 @@ export function createPairingService(db: Database, configInput?: PairingConfig):
         });
       }
 
-      logger.info({ pending: pendingRequests.size, paired: pairedUsers.size }, 'Loaded pairing data');
+      // Load wallet pairing codes
+      const walletCodes = db.query<WalletPairingRequestRow>(
+        'SELECT * FROM wallet_pairing_codes WHERE expiresAt > datetime("now")'
+      );
+      for (const row of walletCodes) {
+        walletPairingCodes.set(row.code, {
+          code: row.code,
+          walletAddress: row.walletAddress,
+          createdAt: new Date(row.createdAt),
+          expiresAt: new Date(row.expiresAt),
+        });
+      }
+
+      // Load wallet links
+      const links = db.query<WalletLinkRow>('SELECT * FROM wallet_links');
+      for (const row of links) {
+        const key = `${row.channel}:${row.chatUserId}`;
+        walletLinks.set(key, {
+          channel: row.channel,
+          chatUserId: row.chatUserId,
+          walletAddress: row.walletAddress,
+          linkedAt: new Date(row.linkedAt),
+          linkedBy: row.linkedBy as WalletLink['linkedBy'],
+        });
+      }
+
+      logger.info({
+        pending: pendingRequests.size,
+        paired: pairedUsers.size,
+        walletCodes: walletPairingCodes.size,
+        walletLinks: walletLinks.size,
+      }, 'Loaded pairing data');
     } catch (err) {
       // Tables might not exist yet
       logger.debug('Pairing tables not initialized yet');
@@ -338,6 +455,13 @@ export function createPairingService(db: Database, configInput?: PairingConfig):
       if (now > req.expiresAt) {
         pendingRequests.delete(code);
         db.run('DELETE FROM pairing_requests WHERE code = ?', [code]);
+      }
+    }
+    // Also cleanup expired wallet pairing codes
+    for (const [code, req] of walletPairingCodes) {
+      if (now > req.expiresAt) {
+        walletPairingCodes.delete(code);
+        db.run('DELETE FROM wallet_pairing_codes WHERE code = ?', [code]);
       }
     }
   }, 60000); // Check every minute
@@ -615,9 +739,134 @@ export function createPairingService(db: Database, configInput?: PairingConfig):
         }
       }
 
+      // Also cleanup wallet pairing codes
+      for (const [code, req] of walletPairingCodes) {
+        if (now > req.expiresAt) {
+          walletPairingCodes.delete(code);
+          db.run('DELETE FROM wallet_pairing_codes WHERE code = ?', [code]);
+          cleaned++;
+        }
+      }
+
       if (cleaned > 0) {
         logger.info({ cleaned }, 'Cleaned up expired pairing requests');
       }
+    },
+
+    // ==========================================================================
+    // WALLET LINKING IMPLEMENTATION
+    // ==========================================================================
+
+    async createWalletPairingCode(walletAddress: string): Promise<string> {
+      // Check if wallet already has a pending code
+      for (const [code, req] of walletPairingCodes) {
+        if (req.walletAddress === walletAddress && new Date() < req.expiresAt) {
+          return code;  // Return existing valid code
+        }
+      }
+
+      // Generate new code
+      let code: string;
+      do {
+        code = generateCode();
+      } while (walletPairingCodes.has(code) || pendingRequests.has(code));
+
+      const request: WalletPairingRequest = {
+        code,
+        walletAddress,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + CODE_EXPIRY_MS),
+      };
+
+      walletPairingCodes.set(code, request);
+
+      // Persist to DB
+      db.run(`
+        INSERT INTO wallet_pairing_codes (code, walletAddress, createdAt, expiresAt)
+        VALUES (?, ?, ?, ?)
+      `, [code, walletAddress, request.createdAt.toISOString(), request.expiresAt.toISOString()]);
+
+      logger.info({ walletAddress: walletAddress.slice(0, 8) + '...', code }, 'Created wallet pairing code');
+      return code;
+    },
+
+    async validateWalletPairingCode(channel: string, chatUserId: string, code: string): Promise<WalletLink | null> {
+      const upperCode = code.toUpperCase().trim();
+      const request = walletPairingCodes.get(upperCode);
+
+      if (!request) {
+        logger.debug({ code: upperCode }, 'Wallet pairing code not found');
+        return null;
+      }
+
+      if (new Date() > request.expiresAt) {
+        walletPairingCodes.delete(upperCode);
+        db.run('DELETE FROM wallet_pairing_codes WHERE code = ?', [upperCode]);
+        logger.debug({ code: upperCode }, 'Wallet pairing code expired');
+        return null;
+      }
+
+      // Code is valid - consume it and create the wallet link
+      walletPairingCodes.delete(upperCode);
+      db.run('DELETE FROM wallet_pairing_codes WHERE code = ?', [upperCode]);
+
+      const link: WalletLink = {
+        channel,
+        chatUserId,
+        walletAddress: request.walletAddress,
+        linkedAt: new Date(),
+        linkedBy: 'pairing_code',
+      };
+
+      const key = `${channel}:${chatUserId}`;
+      walletLinks.set(key, link);
+
+      // Persist to DB
+      db.run(`
+        INSERT OR REPLACE INTO wallet_links (channel, chatUserId, walletAddress, linkedAt, linkedBy)
+        VALUES (?, ?, ?, ?, ?)
+      `, [channel, chatUserId, link.walletAddress, link.linkedAt.toISOString(), link.linkedBy]);
+
+      logger.info({
+        channel,
+        chatUserId,
+        walletAddress: link.walletAddress.slice(0, 8) + '...',
+      }, 'Wallet linked to chat user');
+
+      return link;
+    },
+
+    async getWalletForChatUser(channel: string, chatUserId: string): Promise<string | null> {
+      const key = `${channel}:${chatUserId}`;
+      const link = walletLinks.get(key);
+      return link?.walletAddress ?? null;
+    },
+
+    async getChatUsersForWallet(walletAddress: string): Promise<WalletLink[]> {
+      const links: WalletLink[] = [];
+      for (const link of walletLinks.values()) {
+        if (link.walletAddress === walletAddress) {
+          links.push(link);
+        }
+      }
+      return links;
+    },
+
+    async unlinkChatUser(channel: string, chatUserId: string): Promise<boolean> {
+      const key = `${channel}:${chatUserId}`;
+      const existed = walletLinks.has(key);
+
+      if (existed) {
+        walletLinks.delete(key);
+        db.run('DELETE FROM wallet_links WHERE channel = ? AND chatUserId = ?', [channel, chatUserId]);
+        logger.info({ channel, chatUserId }, 'Chat user unlinked from wallet');
+      }
+
+      return existed;
+    },
+
+    listWalletLinks(): WalletLink[] {
+      return Array.from(walletLinks.values());
     },
   };
 }

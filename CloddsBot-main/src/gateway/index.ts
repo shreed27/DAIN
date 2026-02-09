@@ -41,6 +41,9 @@ import { createMarketIndexService } from '../market-index';
 import { createOpportunityFinder, type OpportunityFinder } from '../opportunity';
 import { createWhaleTracker, type WhaleTracker } from '../feeds/polymarket/whale-tracker';
 import { createCopyTradingService, type CopyTradingService } from '../trading/copy-trading';
+import { createCopyTradingOrchestrator, setCopyTradingOrchestrator, type CopyTradingOrchestrator } from '../trading/copy-trading-orchestrator';
+import { createTelegramMenuService, type TelegramMenuService } from '../telegram-menu';
+import type { TelegramChannelAdapter } from '../channels/telegram/index';
 import { createSmartRouter, type SmartRouter } from '../execution/smart-router';
 import { createExecutionService, type ExecutionService } from '../execution';
 import { createRealtimeAlertsService, connectWhaleTracker, connectOpportunityFinder, type RealtimeAlertsService } from '../alerts';
@@ -582,7 +585,7 @@ export async function createGateway(config: Config): Promise<AppGateway> {
     }
   }
 
-  // Create copy trading service
+  // Create copy trading service (legacy - for config-based copy trading)
   let copyTrading: CopyTradingService | null = null;
   if (config.copyTrading?.enabled && whaleTracker) {
     copyTrading = createCopyTradingService(whaleTracker, executionService, {
@@ -595,6 +598,20 @@ export async function createGateway(config: Config): Promise<AppGateway> {
       copyDelayMs: config.copyTrading?.copyDelayMs ?? 5000,
       dryRun: executionService ? (config.copyTrading?.dryRun ?? false) : true,
     });
+  }
+
+  // Create copy trading orchestrator (per-user copy trading with real execution)
+  let copyTradingOrchestrator: CopyTradingOrchestrator | null = null;
+  if (whaleTracker && cronCredentials) {
+    copyTradingOrchestrator = createCopyTradingOrchestrator(
+      whaleTracker,
+      cronCredentials,
+      db,
+      pairing
+    );
+    // Set global singleton for skill access
+    setCopyTradingOrchestrator(copyTradingOrchestrator);
+    logger.info('Copy trading orchestrator created');
   }
 
   // Create smart router for order routing
@@ -1824,6 +1841,11 @@ export async function createGateway(config: Config): Promise<AppGateway> {
   // Set feature engineering for REST API
   httpGateway.setFeatureEngineering(featureEngine);
 
+  // Set copy trading orchestrator for per-user copy trading API
+  if (copyTradingOrchestrator) {
+    httpGateway.setCopyTradingOrchestrator(copyTradingOrchestrator);
+  }
+
   return {
     async start(): Promise<void> {
       logger.info('Starting gateway services');
@@ -1835,6 +1857,7 @@ export async function createGateway(config: Config): Promise<AppGateway> {
       onShutdown(async () => {
         logger.info('Shutting down gateway services');
         if (executionProducer) await executionProducer.close();
+        if (copyTradingOrchestrator) await copyTradingOrchestrator.shutdown();
         if (whaleTracker) whaleTracker.stop();
         if (copyTrading) copyTrading.stop();
         if (realtimeAlerts) realtimeAlerts.stop();
@@ -1863,6 +1886,34 @@ export async function createGateway(config: Config): Promise<AppGateway> {
       await startCronService();
       startMonitoring();
 
+      // Initialize Telegram menu service for interactive trading UI
+      const telegramAdapter = channels!.getAdapters().telegram as TelegramChannelAdapter | undefined;
+      if (telegramAdapter && telegramAdapter.setMenuService) {
+        const telegramMenuService = createTelegramMenuService({
+          feeds,
+          db,
+          credentials: cronCredentials,
+          pairing,
+          copyTrading: copyTradingOrchestrator,
+          execution: executionService,
+          send: async (msg) => {
+            return channels!.send(msg);
+          },
+          edit: async (msg) => {
+            if (telegramAdapter.editMessage) {
+              await telegramAdapter.editMessage(msg);
+            }
+          },
+          editButtons: async (chatId, messageId, buttons) => {
+            if (telegramAdapter.editMessageReplyMarkup) {
+              await telegramAdapter.editMessageReplyMarkup(chatId, messageId, buttons);
+            }
+          },
+        });
+        telegramAdapter.setMenuService(telegramMenuService);
+        logger.info('Telegram interactive menu service initialized');
+      }
+
       // Start whale tracker if enabled
       if (whaleTracker) {
         await whaleTracker.start();
@@ -1873,6 +1924,12 @@ export async function createGateway(config: Config): Promise<AppGateway> {
       if (copyTrading) {
         copyTrading.start();
         logger.info('Copy trading service started');
+      }
+
+      // Initialize copy trading orchestrator (loads existing configs and starts sessions)
+      if (copyTradingOrchestrator) {
+        await copyTradingOrchestrator.initialize();
+        logger.info('Copy trading orchestrator initialized');
       }
 
       // Start realtime alerts if enabled
@@ -2005,6 +2062,12 @@ export async function createGateway(config: Config): Promise<AppGateway> {
         }
         realtimeAlerts.stop();
         realtimeAlerts = null;
+      }
+
+      // Shutdown copy trading orchestrator
+      if (copyTradingOrchestrator) {
+        await copyTradingOrchestrator.shutdown();
+        copyTradingOrchestrator = null;
       }
 
       // Stop copy trading and whale tracker

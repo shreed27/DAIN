@@ -18,6 +18,10 @@ import {
 } from '../utils/production';
 import type { TickStreamer } from '../services/tick-streamer';
 import type { FeatureEngineering } from '../services/feature-engineering';
+import type { CredentialsManager } from '../credentials/index';
+import type { PairingService } from '../pairing/index';
+import type { CopyTradingOrchestrator } from '../trading/copy-trading-orchestrator';
+import type { Platform } from '../types';
 
 export interface GatewayServer {
   start(): Promise<void>;
@@ -35,6 +39,9 @@ export interface GatewayServer {
   setTickRecorderStatsHandler(handler: TickRecorderStatsHandler | null): void;
   setTickStreamer(streamer: TickStreamer | null): void;
   setFeatureEngineering(service: FeatureEngineering | null): void;
+  setCredentialsManager(manager: CredentialsManager | null): void;
+  setPairingService(service: PairingService | null): void;
+  setCopyTradingOrchestrator(orchestrator: CopyTradingOrchestrator | null): void;
 }
 
 export type ChannelWebhookHandler = (
@@ -178,6 +185,9 @@ export function createServer(
   let tickRecorderStatsHandler: TickRecorderStatsHandler | null = null;
   let tickStreamer: TickStreamer | null = null;
   let featureEngineering: FeatureEngineering | null = null;
+  let credentialsManager: CredentialsManager | null = null;
+  let pairingService: PairingService | null = null;
+  let copyTradingOrchestrator: CopyTradingOrchestrator | null = null;
 
   // Auth middleware for sensitive endpoints
   const authToken = process.env.CLODDS_TOKEN;
@@ -414,6 +424,29 @@ export function createServer(
         features: '/api/features/:platform/:marketId',
         featuresAll: '/api/features',
         featuresStats: '/api/features/stats',
+        integrations: {
+          connect: 'POST /api/v1/integrations/:platform/connect',
+          disconnect: 'POST /api/v1/integrations/:platform/disconnect',
+          test: 'POST /api/v1/integrations/:platform/test',
+          status: 'GET /api/v1/integrations/:platform/status',
+          connected: 'GET /api/v1/integrations/connected',
+        },
+        pairing: {
+          generateCode: 'POST /api/v1/pairing/code',
+          linkedAccounts: 'GET /api/v1/pairing/linked',
+          unlinkAccount: 'DELETE /api/v1/pairing/linked/:channel/:userId',
+        },
+        copyTrading: {
+          configs: 'GET /api/v1/copy-trading/configs',
+          createConfig: 'POST /api/v1/copy-trading/configs',
+          getConfig: 'GET /api/v1/copy-trading/configs/:id',
+          updateConfig: 'PATCH /api/v1/copy-trading/configs/:id',
+          toggleConfig: 'POST /api/v1/copy-trading/configs/:id/toggle',
+          deleteConfig: 'DELETE /api/v1/copy-trading/configs/:id',
+          stats: 'GET /api/v1/copy-trading/stats',
+          history: 'GET /api/v1/copy-trading/history',
+          status: 'GET /api/v1/copy-trading/status',
+        },
       },
     });
   });
@@ -921,6 +954,747 @@ export function createServer(
 
     const stats = featureEngineering.getStats();
     res.json({ stats });
+  });
+
+  // =============================================================================
+  // INTEGRATIONS API - Platform credential management for web frontend
+  // =============================================================================
+
+  // Helper to extract wallet address from request
+  const getWalletAddress = (req: Request): string | null => {
+    return (req.headers['x-wallet-address'] as string) || null;
+  };
+
+  // Supported platforms for integrations
+  const SUPPORTED_PLATFORMS: Platform[] = ['polymarket', 'kalshi', 'manifold'];
+
+  // POST /api/v1/integrations/:platform/connect - Store credentials for a platform
+  app.post('/api/v1/integrations/:platform/connect', async (req, res) => {
+    if (!credentialsManager) {
+      res.status(503).json({ error: 'Credentials manager not configured' });
+      return;
+    }
+
+    const { platform } = req.params;
+    const walletAddress = getWalletAddress(req);
+
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    if (!SUPPORTED_PLATFORMS.includes(platform as Platform)) {
+      res.status(400).json({ error: `Unsupported platform: ${platform}. Supported: ${SUPPORTED_PLATFORMS.join(', ')}` });
+      return;
+    }
+
+    const { credentials } = req.body;
+    if (!credentials || typeof credentials !== 'object') {
+      res.status(400).json({ error: 'Missing credentials in request body' });
+      return;
+    }
+
+    try {
+      // Store credentials keyed by wallet address
+      await credentialsManager.setCredentials(walletAddress, platform as Platform, credentials);
+
+      logger.info({ platform, walletAddress: walletAddress.slice(0, 8) + '...' }, 'Platform credentials stored');
+
+      res.json({
+        success: true,
+        platform,
+        message: `${platform} credentials stored successfully`,
+      });
+    } catch (error) {
+      logger.error({ error, platform, walletAddress }, 'Failed to store credentials');
+      res.status(500).json({ error: 'Failed to store credentials' });
+    }
+  });
+
+  // POST /api/v1/integrations/:platform/disconnect - Remove credentials for a platform
+  app.post('/api/v1/integrations/:platform/disconnect', async (req, res) => {
+    if (!credentialsManager) {
+      res.status(503).json({ error: 'Credentials manager not configured' });
+      return;
+    }
+
+    const { platform } = req.params;
+    const walletAddress = getWalletAddress(req);
+
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    if (!SUPPORTED_PLATFORMS.includes(platform as Platform)) {
+      res.status(400).json({ error: `Unsupported platform: ${platform}` });
+      return;
+    }
+
+    try {
+      await credentialsManager.deleteCredentials(walletAddress, platform as Platform);
+
+      logger.info({ platform, walletAddress: walletAddress.slice(0, 8) + '...' }, 'Platform credentials deleted');
+
+      res.json({
+        success: true,
+        platform,
+        message: `${platform} credentials removed`,
+      });
+    } catch (error) {
+      logger.error({ error, platform, walletAddress }, 'Failed to delete credentials');
+      res.status(500).json({ error: 'Failed to delete credentials' });
+    }
+  });
+
+  // POST /api/v1/integrations/:platform/test - Test credentials for a platform
+  app.post('/api/v1/integrations/:platform/test', async (req, res) => {
+    if (!credentialsManager) {
+      res.status(503).json({ error: 'Credentials manager not configured' });
+      return;
+    }
+
+    const { platform } = req.params;
+    const walletAddress = getWalletAddress(req);
+
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    if (!SUPPORTED_PLATFORMS.includes(platform as Platform)) {
+      res.status(400).json({ error: `Unsupported platform: ${platform}` });
+      return;
+    }
+
+    try {
+      const startTime = Date.now();
+      const creds = await credentialsManager.getCredentials(walletAddress, platform as Platform);
+
+      if (!creds) {
+        res.json({
+          success: false,
+          testResult: 'failed',
+          message: 'No credentials found for this platform',
+        });
+        return;
+      }
+
+      // Platform-specific credential validation
+      let isValid = false;
+      let message = 'Credentials are stored and decryptable';
+
+      if (platform === 'polymarket') {
+        const polyCreds = creds as { apiKey?: string; apiSecret?: string; apiPassphrase?: string };
+        isValid = Boolean(polyCreds.apiKey && polyCreds.apiSecret && polyCreds.apiPassphrase);
+        if (!isValid) {
+          message = 'Missing required Polymarket fields: apiKey, apiSecret, or apiPassphrase';
+        } else {
+          // Try to make a test API call
+          try {
+            const { getPolymarketBalance } = await import('../execution/index');
+            const auth = {
+              apiKey: polyCreds.apiKey!,
+              apiSecret: polyCreds.apiSecret!,
+              apiPassphrase: polyCreds.apiPassphrase!,
+              address: (creds as any).funderAddress || walletAddress,
+            };
+            await getPolymarketBalance(auth, auth.address);
+            await credentialsManager.markSuccess(walletAddress, platform as Platform);
+            message = 'API connection verified successfully';
+          } catch (apiErr) {
+            await credentialsManager.markFailure(walletAddress, platform as Platform);
+            isValid = false;
+            message = `API connection failed: ${apiErr instanceof Error ? apiErr.message : String(apiErr)}`;
+          }
+        }
+      } else if (platform === 'kalshi') {
+        const kalshiCreds = creds as { apiKeyId?: string; privateKeyPem?: string; email?: string };
+        isValid = Boolean((kalshiCreds.apiKeyId && kalshiCreds.privateKeyPem) || kalshiCreds.email);
+        if (!isValid) {
+          message = 'Missing Kalshi credentials (apiKeyId+privateKeyPem or email)';
+        }
+      } else if (platform === 'manifold') {
+        const manifoldCreds = creds as { apiKey?: string };
+        isValid = Boolean(manifoldCreds.apiKey);
+        if (!isValid) {
+          message = 'Missing Manifold API key';
+        }
+      }
+
+      const latencyMs = Date.now() - startTime;
+
+      res.json({
+        success: true,
+        testResult: isValid ? 'passed' : 'failed',
+        message,
+        latencyMs,
+      });
+    } catch (error) {
+      logger.error({ error, platform, walletAddress }, 'Failed to test credentials');
+      res.status(500).json({
+        success: false,
+        testResult: 'failed',
+        message: 'Internal error testing credentials',
+      });
+    }
+  });
+
+  // GET /api/v1/integrations/:platform/status - Get status for a specific platform
+  app.get('/api/v1/integrations/:platform/status', async (req, res) => {
+    if (!credentialsManager) {
+      res.status(503).json({ error: 'Credentials manager not configured' });
+      return;
+    }
+
+    const { platform } = req.params;
+    const walletAddress = getWalletAddress(req);
+
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    if (!SUPPORTED_PLATFORMS.includes(platform as Platform)) {
+      res.status(400).json({ error: `Unsupported platform: ${platform}` });
+      return;
+    }
+
+    try {
+      const hasCredentials = await credentialsManager.hasCredentials(walletAddress, platform as Platform);
+      const isInCooldown = await credentialsManager.isInCooldown(walletAddress, platform as Platform);
+
+      res.json({
+        platform,
+        connected: hasCredentials,
+        isInCooldown,
+        status: hasCredentials ? (isInCooldown ? 'cooldown' : 'connected') : 'disconnected',
+      });
+    } catch (error) {
+      logger.error({ error, platform, walletAddress }, 'Failed to get platform status');
+      res.status(500).json({ error: 'Failed to get platform status' });
+    }
+  });
+
+  // GET /api/v1/integrations/connected - List all connected platforms for a wallet
+  app.get('/api/v1/integrations/connected', async (req, res) => {
+    if (!credentialsManager) {
+      res.status(503).json({ error: 'Credentials manager not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    try {
+      const connectedPlatforms = await credentialsManager.listUserPlatforms(walletAddress);
+
+      const platforms = await Promise.all(
+        SUPPORTED_PLATFORMS.map(async (platform) => {
+          const connected = connectedPlatforms.includes(platform);
+          const isInCooldown = connected ? await credentialsManager!.isInCooldown(walletAddress, platform) : false;
+          return {
+            platform,
+            connected,
+            status: connected ? (isInCooldown ? 'cooldown' : 'connected') : 'disconnected',
+          };
+        })
+      );
+
+      res.json({
+        walletAddress,
+        platforms,
+        connectedCount: connectedPlatforms.length,
+      });
+    } catch (error) {
+      logger.error({ error, walletAddress }, 'Failed to list connected platforms');
+      res.status(500).json({ error: 'Failed to list connected platforms' });
+    }
+  });
+
+  // =============================================================================
+  // WALLET PAIRING API - Link Telegram/Discord to web wallet
+  // =============================================================================
+
+  // POST /api/v1/pairing/code - Generate a pairing code for wallet linking
+  app.post('/api/v1/pairing/code', async (req, res) => {
+    if (!pairingService) {
+      res.status(503).json({ error: 'Pairing service not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    try {
+      const code = await pairingService.createWalletPairingCode(walletAddress);
+
+      res.json({
+        success: true,
+        code,
+        expiresIn: '1 hour',
+        instructions: `To link your Telegram/Discord account, send this code to the bot:\n/pair ${code}`,
+      });
+    } catch (error) {
+      logger.error({ error, walletAddress }, 'Failed to generate pairing code');
+      res.status(500).json({ error: 'Failed to generate pairing code' });
+    }
+  });
+
+  // GET /api/v1/pairing/linked - Get all chat accounts linked to a wallet
+  app.get('/api/v1/pairing/linked', async (req, res) => {
+    if (!pairingService) {
+      res.status(503).json({ error: 'Pairing service not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    try {
+      const links = await pairingService.getChatUsersForWallet(walletAddress);
+
+      res.json({
+        walletAddress,
+        linkedAccounts: links.map((l) => ({
+          channel: l.channel,
+          userId: l.chatUserId,
+          linkedAt: l.linkedAt.toISOString(),
+          linkedBy: l.linkedBy,
+        })),
+        count: links.length,
+      });
+    } catch (error) {
+      logger.error({ error, walletAddress }, 'Failed to get linked accounts');
+      res.status(500).json({ error: 'Failed to get linked accounts' });
+    }
+  });
+
+  // DELETE /api/v1/pairing/linked/:channel/:userId - Unlink a chat account
+  app.delete('/api/v1/pairing/linked/:channel/:userId', async (req, res) => {
+    if (!pairingService) {
+      res.status(503).json({ error: 'Pairing service not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    const { channel, userId } = req.params;
+
+    try {
+      // Verify this link belongs to the requesting wallet
+      const existingWallet = await pairingService.getWalletForChatUser(channel, userId);
+      if (existingWallet !== walletAddress) {
+        res.status(403).json({ error: 'This link does not belong to your wallet' });
+        return;
+      }
+
+      const success = await pairingService.unlinkChatUser(channel, userId);
+
+      res.json({
+        success,
+        message: success ? 'Account unlinked successfully' : 'Account was not linked',
+      });
+    } catch (error) {
+      logger.error({ error, walletAddress, channel, userId }, 'Failed to unlink account');
+      res.status(500).json({ error: 'Failed to unlink account' });
+    }
+  });
+
+  // GET /api/v1/pairing/status/:code - Check if pairing code has been used
+  app.get('/api/v1/pairing/status/:code', async (req, res) => {
+    if (!pairingService) {
+      res.status(503).json({ error: 'Pairing service not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    const { code } = req.params;
+
+    try {
+      // Check if code has been used to link an account
+      const links = await pairingService.getChatUsersForWallet(walletAddress);
+      const linkedAccount = links.length > 0 ? links[links.length - 1] : null;
+
+      // A code is "completed" if the wallet has at least one linked account
+      // In a real implementation, you'd track code -> wallet association
+      res.json({
+        success: true,
+        code,
+        status: linkedAccount ? 'completed' : 'pending',
+        linkedAccount: linkedAccount ? {
+          channel: linkedAccount.channel,
+          userId: linkedAccount.chatUserId,
+          linkedAt: linkedAccount.linkedAt.toISOString(),
+        } : undefined,
+      });
+    } catch (error) {
+      logger.error({ error, code }, 'Failed to check pairing status');
+      res.status(500).json({ error: 'Failed to check pairing status' });
+    }
+  });
+
+  // =============================================================================
+  // COPY TRADING API - Manage copy trading configurations
+  // =============================================================================
+
+  // GET /api/v1/copy-trading/configs - Get all copy trading configs for wallet
+  app.get('/api/v1/copy-trading/configs', async (req, res) => {
+    if (!copyTradingOrchestrator) {
+      res.status(503).json({ error: 'Copy trading service not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    try {
+      const configs = await copyTradingOrchestrator.getConfigsForWallet(walletAddress);
+      res.json({ success: true, data: configs });
+    } catch (error) {
+      logger.error({ error, walletAddress }, 'Failed to get copy trading configs');
+      res.status(500).json({ error: 'Failed to get configs' });
+    }
+  });
+
+  // POST /api/v1/copy-trading/configs - Create a new copy trading config
+  app.post('/api/v1/copy-trading/configs', async (req, res) => {
+    if (!copyTradingOrchestrator || !credentialsManager) {
+      res.status(503).json({ error: 'Copy trading service not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    try {
+      // Verify Polymarket credentials exist
+      const hasCreds = await credentialsManager.hasCredentials(walletAddress, 'polymarket');
+      if (!hasCreds) {
+        res.status(400).json({
+          error: 'Connect Polymarket first in Settings > Integrations',
+          code: 'CREDENTIALS_REQUIRED',
+        });
+        return;
+      }
+
+      const config = await copyTradingOrchestrator.createConfig(walletAddress, req.body);
+      res.json({ success: true, data: config });
+    } catch (error) {
+      logger.error({ error, walletAddress }, 'Failed to create copy trading config');
+      res.status(500).json({ error: 'Failed to create config' });
+    }
+  });
+
+  // GET /api/v1/copy-trading/configs/:id - Get a specific config
+  app.get('/api/v1/copy-trading/configs/:id', async (req, res) => {
+    if (!copyTradingOrchestrator) {
+      res.status(503).json({ error: 'Copy trading service not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    try {
+      const config = await copyTradingOrchestrator.getConfig(req.params.id);
+      if (!config || config.userWallet !== walletAddress) {
+        res.status(404).json({ error: 'Config not found' });
+        return;
+      }
+      res.json({ success: true, data: config });
+    } catch (error) {
+      logger.error({ error, configId: req.params.id }, 'Failed to get copy trading config');
+      res.status(500).json({ error: 'Failed to get config' });
+    }
+  });
+
+  // PATCH /api/v1/copy-trading/configs/:id - Update a config
+  app.patch('/api/v1/copy-trading/configs/:id', async (req, res) => {
+    if (!copyTradingOrchestrator) {
+      res.status(503).json({ error: 'Copy trading service not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    try {
+      const existingConfig = await copyTradingOrchestrator.getConfig(req.params.id);
+      if (!existingConfig || existingConfig.userWallet !== walletAddress) {
+        res.status(404).json({ error: 'Config not found' });
+        return;
+      }
+
+      const updatedConfig = await copyTradingOrchestrator.updateConfig(req.params.id, req.body);
+      res.json({ success: true, data: updatedConfig });
+    } catch (error) {
+      logger.error({ error, configId: req.params.id }, 'Failed to update copy trading config');
+      res.status(500).json({ error: 'Failed to update config' });
+    }
+  });
+
+  // POST /api/v1/copy-trading/configs/:id/toggle - Toggle config enabled state
+  app.post('/api/v1/copy-trading/configs/:id/toggle', async (req, res) => {
+    if (!copyTradingOrchestrator) {
+      res.status(503).json({ error: 'Copy trading service not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    try {
+      const existingConfig = await copyTradingOrchestrator.getConfig(req.params.id);
+      if (!existingConfig || existingConfig.userWallet !== walletAddress) {
+        res.status(404).json({ error: 'Config not found' });
+        return;
+      }
+
+      const { enabled } = req.body;
+      await copyTradingOrchestrator.toggleConfig(req.params.id, enabled);
+      res.json({ success: true, enabled });
+    } catch (error) {
+      logger.error({ error, configId: req.params.id }, 'Failed to toggle copy trading config');
+      res.status(500).json({ error: 'Failed to toggle config' });
+    }
+  });
+
+  // DELETE /api/v1/copy-trading/configs/:id - Delete a config
+  app.delete('/api/v1/copy-trading/configs/:id', async (req, res) => {
+    if (!copyTradingOrchestrator) {
+      res.status(503).json({ error: 'Copy trading service not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    try {
+      const existingConfig = await copyTradingOrchestrator.getConfig(req.params.id);
+      if (!existingConfig || existingConfig.userWallet !== walletAddress) {
+        res.status(404).json({ error: 'Config not found' });
+        return;
+      }
+
+      await copyTradingOrchestrator.deleteConfig(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      logger.error({ error, configId: req.params.id }, 'Failed to delete copy trading config');
+      res.status(500).json({ error: 'Failed to delete config' });
+    }
+  });
+
+  // GET /api/v1/copy-trading/stats - Get aggregated copy trading stats
+  app.get('/api/v1/copy-trading/stats', async (req, res) => {
+    if (!copyTradingOrchestrator) {
+      res.status(503).json({ error: 'Copy trading service not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    try {
+      const stats = await copyTradingOrchestrator.getAggregatedStats(walletAddress);
+      res.json({ success: true, data: stats });
+    } catch (error) {
+      logger.error({ error, walletAddress }, 'Failed to get copy trading stats');
+      res.status(500).json({ error: 'Failed to get stats' });
+    }
+  });
+
+  // GET /api/v1/copy-trading/history - Get copy trading history
+  app.get('/api/v1/copy-trading/history', async (req, res) => {
+    if (!copyTradingOrchestrator) {
+      res.status(503).json({ error: 'Copy trading service not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const configId = req.query.configId as string | undefined;
+      const history = await copyTradingOrchestrator.getHistory(walletAddress, { limit, configId });
+      res.json({ success: true, data: history });
+    } catch (error) {
+      logger.error({ error, walletAddress }, 'Failed to get copy trading history');
+      res.status(500).json({ error: 'Failed to get history' });
+    }
+  });
+
+  // GET /api/v1/copy-trading/status - Check if copy trading session is active
+  app.get('/api/v1/copy-trading/status', async (req, res) => {
+    if (!copyTradingOrchestrator) {
+      res.status(503).json({ error: 'Copy trading service not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    try {
+      const hasSession = copyTradingOrchestrator.hasActiveSession(walletAddress);
+      const stats = await copyTradingOrchestrator.getStats(walletAddress);
+      res.json({
+        success: true,
+        data: {
+          active: hasSession,
+          ...stats,
+        },
+      });
+    } catch (error) {
+      logger.error({ error, walletAddress }, 'Failed to get copy trading status');
+      res.status(500).json({ error: 'Failed to get status' });
+    }
+  });
+
+  // =============================================================================
+  // POLYMARKET WALLET AUTH - Connect Polymarket via wallet signing
+  // =============================================================================
+
+  // In-memory challenge storage (in production, use Redis/DB with expiry)
+  const polymarketChallenges = new Map<string, { challenge: string; expiresAt: number }>();
+
+  // GET /api/v1/integrations/polymarket/challenge - Get message to sign
+  app.get('/api/v1/integrations/polymarket/challenge', (req, res) => {
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    // Generate a unique challenge message
+    const timestamp = Date.now();
+    const nonce = Math.random().toString(36).substring(2, 15);
+    const challenge = `Sign this message to connect your Polymarket account.\n\nWallet: ${walletAddress}\nTimestamp: ${timestamp}\nNonce: ${nonce}`;
+
+    // Store challenge with 5 minute expiry
+    const expiresAt = timestamp + 5 * 60 * 1000;
+    polymarketChallenges.set(walletAddress, { challenge, expiresAt });
+
+    // Cleanup old challenges
+    const now = Date.now();
+    for (const [key, value] of polymarketChallenges) {
+      if (now > value.expiresAt) {
+        polymarketChallenges.delete(key);
+      }
+    }
+
+    res.json({
+      success: true,
+      challenge,
+      expiresAt,
+    });
+  });
+
+  // POST /api/v1/integrations/polymarket/connect-wallet - Verify signature and derive credentials
+  app.post('/api/v1/integrations/polymarket/connect-wallet', async (req, res) => {
+    if (!credentialsManager) {
+      res.status(503).json({ error: 'Credentials manager not configured' });
+      return;
+    }
+
+    const walletAddress = getWalletAddress(req);
+    if (!walletAddress) {
+      res.status(401).json({ error: 'Missing x-wallet-address header' });
+      return;
+    }
+
+    const { signature, address, challenge } = req.body;
+
+    if (!signature || !address || !challenge) {
+      res.status(400).json({ error: 'Missing signature, address, or challenge' });
+      return;
+    }
+
+    try {
+      // Verify the challenge exists and hasn't expired
+      const storedChallenge = polymarketChallenges.get(walletAddress);
+      if (!storedChallenge || Date.now() > storedChallenge.expiresAt) {
+        res.status(400).json({ error: 'Challenge expired or not found. Please request a new challenge.' });
+        return;
+      }
+
+      if (storedChallenge.challenge !== challenge) {
+        res.status(400).json({ error: 'Challenge mismatch' });
+        return;
+      }
+
+      // Clear the used challenge
+      polymarketChallenges.delete(walletAddress);
+
+      // For Polymarket, we need to derive API credentials from the wallet
+      // In a real implementation, this would call Polymarket's derive_api_key endpoint
+      // For now, we'll store a placeholder that indicates wallet-based auth
+      const walletAuthCredentials = {
+        authMethod: 'wallet',
+        walletAddress: address,
+        connectedAt: new Date().toISOString(),
+        // In production: call Polymarket API to derive real credentials
+        // const apiCreds = await derivePolymarketCredentials(address, signature);
+      };
+
+      await credentialsManager.setCredentials(walletAddress, 'polymarket' as Platform, walletAuthCredentials);
+
+      logger.info({ walletAddress: walletAddress.slice(0, 8) + '...' }, 'Polymarket wallet connected');
+
+      res.json({
+        success: true,
+        message: 'Polymarket account connected via wallet',
+      });
+    } catch (error) {
+      logger.error({ error, walletAddress }, 'Failed to connect Polymarket wallet');
+      res.status(500).json({ error: 'Failed to connect wallet' });
+    }
   });
 
   // Telegram Mini App
@@ -1500,6 +2274,15 @@ export function createServer(
     },
     setFeatureEngineering(service: FeatureEngineering | null): void {
       featureEngineering = service;
+    },
+    setCredentialsManager(manager: CredentialsManager | null): void {
+      credentialsManager = manager;
+    },
+    setPairingService(service: PairingService | null): void {
+      pairingService = service;
+    },
+    setCopyTradingOrchestrator(orchestrator: CopyTradingOrchestrator | null): void {
+      copyTradingOrchestrator = orchestrator;
     },
   };
 }

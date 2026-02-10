@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTokenAnalysis, type TokenAnalysisResult } from '@/lib/useTokenAnalysis';
+import toast from 'react-hot-toast';
 
 const GATEWAY_URL = process.env.NEXT_PUBLIC_GATEWAY_URL || 'http://localhost:4000';
 
@@ -143,7 +144,9 @@ export function SwapWidget() {
       }
     } catch (err) {
       console.error('Quote error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to fetch quote');
+      const errorMsg = err instanceof Error ? err.message : 'Failed to fetch quote';
+      setError(errorMsg);
+      toast.error(errorMsg);
       setStatus('error');
       setQuote(null);
     }
@@ -159,6 +162,7 @@ export function SwapWidget() {
   const executeSwap = async () => {
     if (!publicKey || !signTransaction || !quote) {
       setError('Please connect your wallet');
+      toast.error('Please connect your wallet');
       return;
     }
 
@@ -218,6 +222,7 @@ export function SwapWidget() {
       }, 'confirmed');
 
       setStatus('success');
+      toast.success(`Swapped ${inputAmount} ${inputToken.symbol} for ${quote.outputAmount} ${outputToken.symbol}`);
 
       // Reset after success
       setTimeout(() => {
@@ -229,7 +234,9 @@ export function SwapWidget() {
 
     } catch (err) {
       console.error('Swap error:', err);
-      setError(err instanceof Error ? err.message : 'Swap failed');
+      const errorMsg = err instanceof Error ? err.message : 'Swap failed';
+      setError(errorMsg);
+      toast.error(errorMsg);
       setStatus('error');
     }
   };

@@ -4,6 +4,8 @@
     "description": "Starter Kit for Sidex OpenClaw Agents",
     "main": "index.js",
     "scripts": {
+        "start": "node index.js",
+        "dev": "node --watch index.js",
         "test": "echo \"Error: no test specified\" && exit 1",
         "setup": "node quick-setup/setup.js"
     },

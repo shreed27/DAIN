@@ -1440,6 +1440,217 @@ export class AgentOrchestrator extends EventEmitter {
         return timer;
     }
 
+    // ============================================================================
+    // Health & Validation Methods
+    // ============================================================================
+
+    /**
+     * Health status for an individual adapter
+     */
+    interface AdapterHealth {
+        name: string;
+        healthy: boolean;
+        latency?: number;
+        error?: string;
+        lastChecked: number;
+    }
+
+    /**
+     * Aggregated health report for all adapters
+     */
+    interface HealthReport {
+        healthy: boolean;
+        timestamp: number;
+        adapters: Record<string, AdapterHealth>;
+        summary: {
+            total: number;
+            healthy: number;
+            unhealthy: number;
+            configured: string[];
+            missing: string[];
+        };
+    }
+
+    /**
+     * Check health of all configured adapters
+     */
+    async healthCheckAll(): Promise<HealthReport> {
+        const adapters: Record<string, AdapterHealth> = {};
+        const allAdapterNames = ['agentDex', 'openClaw', 'opusX', 'osintMarket', 'clawdnet', 'cloddsBot'];
+        const configured: string[] = [];
+        const missing: string[] = [];
+        let healthyCount = 0;
+
+        for (const name of allAdapterNames) {
+            const adapter = this.adapters[name as keyof OrchestratorAdapters];
+
+            if (!adapter) {
+                missing.push(name);
+                adapters[name] = {
+                    name,
+                    healthy: false,
+                    error: 'Not configured',
+                    lastChecked: Date.now(),
+                };
+                continue;
+            }
+
+            configured.push(name);
+            const startTime = Date.now();
+
+            try {
+                // Check if adapter has a health check method
+                if (typeof (adapter as any).checkHealth === 'function') {
+                    const health = await (adapter as any).checkHealth();
+                    const latency = Date.now() - startTime;
+
+                    adapters[name] = {
+                        name,
+                        healthy: health?.healthy ?? true,
+                        latency,
+                        error: health?.error,
+                        lastChecked: Date.now(),
+                    };
+
+                    if (health?.healthy !== false) {
+                        healthyCount++;
+                    }
+                } else {
+                    // Adapter exists but has no health check - assume healthy
+                    adapters[name] = {
+                        name,
+                        healthy: true,
+                        latency: Date.now() - startTime,
+                        lastChecked: Date.now(),
+                    };
+                    healthyCount++;
+                }
+            } catch (error) {
+                adapters[name] = {
+                    name,
+                    healthy: false,
+                    latency: Date.now() - startTime,
+                    error: error instanceof Error ? error.message : 'Health check failed',
+                    lastChecked: Date.now(),
+                };
+            }
+        }
+
+        return {
+            healthy: healthyCount === configured.length && configured.length > 0,
+            timestamp: Date.now(),
+            adapters,
+            summary: {
+                total: allAdapterNames.length,
+                healthy: healthyCount,
+                unhealthy: configured.length - healthyCount,
+                configured,
+                missing,
+            },
+        };
+    }
+
+    /**
+     * Validate that required adapters are configured for a specific operation
+     */
+    validateAdaptersForOperation(operation: 'solana_swap' | 'futures' | 'prediction' | 'a2a' | 'osint'): {
+        valid: boolean;
+        missing: string[];
+        message?: string;
+    } {
+        const required: Record<string, string[]> = {
+            solana_swap: ['agentDex'],
+            futures: ['openClaw'],
+            prediction: ['cloddsBot'],
+            a2a: ['clawdnet'],
+            osint: ['osintMarket'],
+        };
+
+        const requiredAdapters = required[operation] || [];
+        const missing: string[] = [];
+
+        for (const name of requiredAdapters) {
+            if (!this.adapters[name as keyof OrchestratorAdapters]) {
+                missing.push(name);
+            }
+        }
+
+        if (missing.length > 0) {
+            return {
+                valid: false,
+                missing,
+                message: `Missing required adapters for ${operation}: ${missing.join(', ')}`,
+            };
+        }
+
+        return { valid: true, missing: [] };
+    }
+
+    /**
+     * Get adapter status summary
+     */
+    getAdapterStatus(): Record<string, boolean> {
+        return {
+            agentDex: !!this.adapters.agentDex,
+            openClaw: !!this.adapters.openClaw,
+            opusX: !!this.adapters.opusX,
+            osintMarket: !!this.adapters.osintMarket,
+            clawdnet: !!this.adapters.clawdnet,
+            cloddsBot: !!this.adapters.cloddsBot,
+        };
+    }
+
+    /**
+     * Get all agents
+     */
+    getAgents(): AgentConfig[] {
+        return Array.from(this.agents.values());
+    }
+
+    /**
+     * Get a specific adapter by name
+     */
+    getAdapter(name: string): AgentDexAdapter | OpenClawAdapter | OpusXAdapter | OsintMarketAdapter | ClawdnetAdapter | CloddsBotAdapter | undefined {
+        const adapterMap: Record<string, typeof this.adapters[keyof typeof this.adapters]> = {
+            agentDex: this.adapters.agentDex,
+            agentdex: this.adapters.agentDex,
+            openClaw: this.adapters.openClaw,
+            openclaw: this.adapters.openClaw,
+            opusX: this.adapters.opusX,
+            opusx: this.adapters.opusX,
+            osintMarket: this.adapters.osintMarket,
+            osintmarket: this.adapters.osintMarket,
+            clawdnet: this.adapters.clawdnet,
+            cloddsBot: this.adapters.cloddsBot,
+            cloddsbot: this.adapters.cloddsBot,
+        };
+        return adapterMap[name];
+    }
+
+    /**
+     * Set agent status
+     */
+    setAgentStatus(agentId: string, status: AgentStatus): void {
+        const agent = this.agents.get(agentId);
+        if (!agent) {
+            throw new Error(`Agent ${agentId} not found`);
+        }
+        agent.status = status;
+        this.emitEvent({
+            type: EventType.StatusChanged,
+            agentId,
+            timestamp: Date.now(),
+            data: { previousStatus: agent.status, newStatus: status },
+        });
+    }
+
+    /**
+     * Set adapters (for runtime configuration)
+     */
+    setAdapters(adapters: Partial<OrchestratorAdapters>): void {
+        this.adapters = { ...this.adapters, ...adapters };
+    }
+
     // Private helper methods
 
     private generateAgentId(): string {

@@ -1,0 +1,50 @@
+{
+  "name": "@clawdnet/sdk",
+  "version": "1.0.0",
+  "description": "ClawdNet SDK - A2A Protocol, X402 Payments, and Agent Registry",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "clawdnet",
+    "a2a",
+    "x402",
+    "agent",
+    "protocol",
+    "erc-8004",
+    "web3"
+  ],
+  "author": "Collesium",
+  "license": "MIT",
+  "dependencies": {
+    "viem": "^2.45.1",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3",
+    "vitest": "^1.0.4"
+  },
+  "peerDependencies": {
+    "viem": ">=2.0.0"
+  }
+}

@@ -10,8 +10,9 @@ import { WhaleAlerts } from "@/components/trading/WhaleAlerts";
 import { AIReasoning } from "@/components/trading/AIReasoning";
 import { ConnectionStatus } from "@/components/trading/ConnectionStatus";
 import { SurvivalModeIndicator } from "@/components/trading/SurvivalModeIndicator";
-import { Search, Bell, Rocket, Clock, Cpu, Activity, Zap, Crown, Brain, Loader2 } from "lucide-react";
+import { Search, Bell, Rocket, Clock, Cpu, Activity, Zap, Crown, Brain, Loader2, AlertTriangle } from "lucide-react";
 import api from "@/lib/api";
+import toast from "react-hot-toast";
 
 interface DashboardMetrics {
   totalPnL: number;
@@ -34,6 +35,7 @@ export default function Dashboard() {
   const [marketStats, setMarketStats] = useState<MarketStats | null>(null);
   const [agentCount, setAgentCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [connectionError, setConnectionError] = useState(false);
 
   // Generate sparkline data based on actual values
   const generateSparkline = (value: number, positive: boolean) => {
@@ -73,6 +75,8 @@ export default function Dashboard() {
         }
       } catch (error) {
         console.error('Failed to fetch dashboard data:', error);
+        setConnectionError(true);
+        toast.error('Unable to connect to trading server. Check if the orchestrator is running.');
       } finally {
         setLoading(false);
       }
@@ -126,6 +130,27 @@ export default function Dashboard() {
           </button>
         </div>
       </header>
+
+      {/* Connection Error Banner */}
+      {connectionError && (
+        <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-4 flex items-center gap-3">
+          <AlertTriangle className="w-5 h-5 text-yellow-500 flex-shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-yellow-400">Connection Error</p>
+            <p className="text-xs text-muted-foreground">Unable to connect to the trading server. Make sure the orchestrator is running on localhost:4000</p>
+          </div>
+          <button
+            onClick={() => {
+              setConnectionError(false);
+              setLoading(true);
+              window.location.reload();
+            }}
+            className="px-3 py-1.5 rounded-lg bg-yellow-500/20 text-yellow-400 text-sm font-medium hover:bg-yellow-500/30 transition-colors"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Metrics Row */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">

@@ -11,8 +11,18 @@
 
 import axios, { AxiosInstance } from 'axios';
 import { EventEmitter } from 'events';
-import { createWalletClient, createPublicClient, http, parseUnits, encodeFunctionData } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
+import {
+  createWalletClient,
+  createPublicClient,
+  http,
+  parseUnits,
+  encodeFunctionData,
+  type WalletClient,
+  type PublicClient,
+  type Chain,
+  type Transport,
+} from 'viem';
+import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 import type {
   AdapterConfig,
@@ -21,6 +31,7 @@ import type {
   A2AMessage,
   X402PaymentRequest,
 } from './types.js';
+import { withRetry, CircuitBreaker, type RetryOptions } from '../utils/retry.js';
 
 // USDC contract on Base
 const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' as const;
@@ -50,10 +61,12 @@ export class ClawdnetAdapter extends EventEmitter {
   private client: AxiosInstance;
   private config: ClawdnetAdapterConfig;
   private health: AdapterHealth = { healthy: false, lastChecked: 0 };
-  private walletClient: any = null;  // viem WalletClient
-  private publicClient: any = null;  // viem PublicClient
+  private walletClient: WalletClient<Transport, Chain, PrivateKeyAccount> | null = null;
+  private publicClient: PublicClient<Transport, Chain> | null = null;
   private walletAddress: string | null = null;
-  private account: any = null;       // viem Account
+  private account: PrivateKeyAccount | null = null;
+  private circuitBreaker: CircuitBreaker;
+  private retryOptions: RetryOptions;
 
   constructor(config: ClawdnetAdapterConfig) {
     super();
@@ -71,6 +84,26 @@ export class ClawdnetAdapter extends EventEmitter {
         ...(this.config.apiKey && { Authorization: `Bearer ${this.config.apiKey}` }),
       },
     });
+
+    // Initialize circuit breaker for A2A operations
+    this.circuitBreaker = new CircuitBreaker('clawdnet-a2a', {
+      failureThreshold: 5,
+      resetTimeoutMs: 30000,
+      successThreshold: 2,
+    });
+
+    // Initialize retry options for network operations
+    this.retryOptions = {
+      maxAttempts: 3,
+      initialDelayMs: 1000,
+      maxDelayMs: 10000,
+      backoffMultiplier: 2,
+      jitter: true,
+      nonRetryableErrors: ['insufficient_funds', 'invalid_signature', 'unauthorized'],
+      onRetry: (attempt, error, nextDelayMs) => {
+        console.log(`[ClawdnetAdapter] Retry attempt ${attempt} after error: ${error.message}. Next delay: ${nextDelayMs}ms`);
+      },
+    };
 
     // Initialize wallet if private key is provided
     if (this.config.privateKey) {
@@ -239,7 +272,7 @@ export class ClawdnetAdapter extends EventEmitter {
   // ==================== A2A Communication ====================
 
   /**
-   * Send A2A message to another agent
+   * Send A2A message to another agent (with circuit breaker and retry)
    */
   async sendA2AMessage(params: {
     toAgentId: string;
@@ -275,37 +308,46 @@ export class ClawdnetAdapter extends EventEmitter {
     };
 
     try {
-      // Get target agent to find endpoint
-      const targetAgent = await this.getAgent(params.toHandle);
-      if (!targetAgent) {
-        return { success: false, error: 'Target agent not found' };
-      }
+      // Use circuit breaker for the A2A call
+      return await this.circuitBreaker.execute(async () => {
+        // Get target agent to find endpoint (with retry)
+        const targetAgent = await withRetry(
+          () => this.getAgent(params.toHandle).then(agent => {
+            if (!agent) throw new Error('Target agent not found');
+            return agent;
+          }),
+          { ...this.retryOptions, maxAttempts: 2 }
+        );
 
-      // Send directly to agent endpoint
-      const response = await axios.post(targetAgent.endpoint, message, {
-        timeout: this.config.timeout,
-        headers: { 'Content-Type': 'application/json' },
-      });
+        // Send directly to agent endpoint with retry
+        const response = await withRetry(
+          () => axios.post(targetAgent.endpoint, message, {
+            timeout: this.config.timeout,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+          this.retryOptions
+        );
 
-      // Check for 402 Payment Required
-      if (response.status === 402) {
+        // Check for 402 Payment Required
+        if (response.status === 402) {
+          return {
+            success: false,
+            paymentRequired: {
+              amount: response.headers['x-payment-amount'],
+              currency: response.headers['x-payment-currency'] || 'USDC',
+              recipientAddress: response.headers['x-payment-address'],
+              chain: response.headers['x-payment-chain'] || 'base',
+            },
+          };
+        }
+
+        this.emit('a2a_message_sent', { message, response: response.data });
+
         return {
-          success: false,
-          paymentRequired: {
-            amount: response.headers['x-payment-amount'],
-            currency: response.headers['x-payment-currency'] || 'USDC',
-            recipientAddress: response.headers['x-payment-address'],
-            chain: response.headers['x-payment-chain'] || 'base',
-          },
+          success: true,
+          response: response.data,
         };
-      }
-
-      this.emit('a2a_message_sent', { message, response: response.data });
-
-      return {
-        success: true,
-        response: response.data,
-      };
+      });
     } catch (error) {
       if (axios.isAxiosError(error) && error.response?.status === 402) {
         return {
@@ -317,6 +359,11 @@ export class ClawdnetAdapter extends EventEmitter {
             chain: error.response.headers['x-payment-chain'] || 'base',
           },
         };
+      }
+
+      // Check if circuit breaker is open
+      if (error instanceof Error && error.message.includes('Circuit breaker')) {
+        console.warn('[ClawdnetAdapter] Circuit breaker OPEN - A2A requests blocked');
       }
 
       return {
@@ -591,6 +638,57 @@ export class ClawdnetAdapter extends EventEmitter {
 
   isHealthy(): boolean {
     return this.health.healthy;
+  }
+
+  /**
+   * Get circuit breaker status for A2A operations
+   */
+  getCircuitBreakerStatus(): {
+    state: string;
+    failures: number;
+    successes: number;
+    isOpen: boolean;
+  } {
+    const stats = this.circuitBreaker.getStats();
+    return {
+      state: stats.state,
+      failures: stats.failures,
+      successes: stats.successes,
+      isOpen: stats.state === 'OPEN',
+    };
+  }
+
+  /**
+   * Reset circuit breaker (manual recovery)
+   */
+  resetCircuitBreaker(): void {
+    this.circuitBreaker.reset();
+    console.log('[ClawdnetAdapter] Circuit breaker manually reset');
+  }
+
+  /**
+   * Get comprehensive adapter status
+   */
+  getStatus(): {
+    healthy: boolean;
+    walletInitialized: boolean;
+    walletAddress: string | null;
+    circuitBreaker: {
+      state: string;
+      failures: number;
+      successes: number;
+    };
+    agentId: string | undefined;
+    agentHandle: string | undefined;
+  } {
+    return {
+      healthy: this.health.healthy,
+      walletInitialized: this.walletClient !== null,
+      walletAddress: this.walletAddress,
+      circuitBreaker: this.circuitBreaker.getStats(),
+      agentId: this.config.agentId,
+      agentHandle: this.config.agentHandle,
+    };
   }
 
   /**

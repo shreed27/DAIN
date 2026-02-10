@@ -27,3 +27,9 @@ export * from './orchestrator';
 
 // Export adapters for external service integration
 export * from './adapters';
+
+// Export utilities (retry, circuit breaker, etc.)
+export * from './utils';
+
+// Export server creation function
+export { createOrchestratorServer } from './server';

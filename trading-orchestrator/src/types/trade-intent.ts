@@ -5,20 +5,43 @@
 import { MarketType } from './strategy';
 
 export interface TradeIntent {
-    id: string;
-    agentId: string;
-    strategyId: string;
+    id?: string;
+    agentId?: string;
+    strategyId?: string;
 
-    action: TradeAction;
-    market: MarketType;
-    asset: string;
-    amount: number;
+    // Core trade parameters
+    action?: TradeAction;
+    side: 'buy' | 'sell';           // Simplified side
+    market?: MarketType;
 
-    constraints: TradeConstraints;
-    reasoning: string;
+    // Asset identification
+    asset?: string;                  // Legacy field
+    token: string;                   // Token symbol or identifier
+    symbol?: string;                 // Trading pair symbol (e.g., 'SOL/USDC')
+    tokenMint?: string;              // Solana token mint address
 
-    status: IntentStatus;
-    createdAt: number;
+    // Size and price
+    amount?: number;                 // Legacy field
+    size: number;                    // Trade size
+    price: number;                   // Target price
+
+    // Exchange routing
+    exchange?: string;               // Target exchange (solana, binance, polymarket, etc.)
+    leverage?: number;               // For futures trading
+
+    // Prediction market specific
+    marketId?: string;               // Prediction market ID
+    tokenId?: string;                // Outcome token ID
+    outcome?: string;                // Outcome name (Yes/No)
+
+    // Constraints
+    constraints?: TradeConstraints;
+    slippageBps?: number;            // Max slippage in basis points
+
+    // Metadata
+    reasoning?: string;
+    status?: IntentStatus;
+    createdAt?: number;
     executedAt?: number;
 }
 

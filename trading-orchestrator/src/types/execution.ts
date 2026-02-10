@@ -33,13 +33,23 @@ export interface ExecutionRoute {
     estimatedFees: number;          // USD
 }
 
-export type Exchange = 'solana' | 'jupiter' | 'binance' | 'bybit' | 'hyperliquid';
+// DEX exchanges
+export type DexExchange = 'solana' | 'jupiter' | 'raydium' | 'orca' | 'meteora' | 'uniswap' | 'evm';
+
+// Perpetual futures exchanges
+export type FuturesExchange = 'binance' | 'bybit' | 'hyperliquid' | 'drift' | 'mexc';
+
+// Prediction market platforms
+export type PredictionExchange = 'polymarket' | 'kalshi' | 'manifold' | 'metaculus' | 'predictit' | 'betfair' | 'smarkets';
+
+// All supported exchanges
+export type Exchange = DexExchange | FuturesExchange | PredictionExchange;
 
 export interface Position {
     id: string;
     agentId: string;
     token: string;
-    symbol: string;                 // Trading pair symbol (e.g., 'SOL/USDC')
+    symbol: string;                 // Trading pair symbol (e.g., 'SOL/USDC') or market question
     amount: number;
     entryPrice: number;
     currentPrice: number;
@@ -49,4 +59,7 @@ export interface Position {
     openedAt: number;
     exchange: Exchange;             // Which exchange this position is on
     tokenMint?: string;             // Solana token mint address (for DEX positions)
+    marketId?: string;              // Prediction market ID (for prediction markets)
+    tokenId?: string;               // Outcome token ID (for prediction markets)
+    outcome?: string;               // Outcome name (e.g., 'Yes', 'No')
 }

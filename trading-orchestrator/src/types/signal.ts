@@ -5,9 +5,10 @@
 export interface Signal {
     id: string;
     source: SignalSource;
-    type: string;
+    type?: string;
+    token?: string;                 // Token/asset identifier
     data: any;
-    confidence: number;             // 0-100
+    confidence: number;             // 0-1 (normalized)
     timestamp: number;
     expiresAt?: number;             // Optional expiration
     metadata?: Record<string, any>;

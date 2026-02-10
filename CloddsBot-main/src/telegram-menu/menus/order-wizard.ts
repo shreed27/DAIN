@@ -7,6 +7,50 @@ import type { Market } from '../../types';
 import { formatUSD, formatCents, truncate } from '../utils/format';
 import { btn, orderSizeButtons, orderPriceButtons, orderConfirmButtons, mainMenuBtn, backBtn } from '../utils/keyboard';
 import { logger } from '../../utils/logger';
+import { createExecutionService, type ExecutionConfig, type ExecutionService } from '../../execution';
+
+interface PolymarketCredentials {
+  address: string;
+  apiKey: string;
+  apiSecret: string;
+  apiPassphrase: string;
+  privateKey: string;
+  funderAddress?: string;
+  signatureType?: number;
+}
+
+/**
+ * Create execution service for a specific user's wallet credentials
+ */
+async function createUserExecutionService(ctx: MenuContext, wallet: string): Promise<ExecutionService | null> {
+  try {
+    const polymarketCreds = await ctx.credentials.getCredentials<PolymarketCredentials>(wallet, 'polymarket');
+
+    if (!polymarketCreds) {
+      logger.warn({ wallet }, 'No Polymarket credentials found');
+      return null;
+    }
+
+    const execConfig: ExecutionConfig = {
+      polymarket: {
+        address: polymarketCreds.address,
+        apiKey: polymarketCreds.apiKey,
+        apiSecret: polymarketCreds.apiSecret,
+        apiPassphrase: polymarketCreds.apiPassphrase,
+        privateKey: polymarketCreds.privateKey,
+        funderAddress: polymarketCreds.funderAddress || polymarketCreds.address,
+        signatureType: polymarketCreds.signatureType,
+      },
+      maxOrderSize: 1000,
+      dryRun: false,
+    };
+
+    return createExecutionService(execConfig);
+  } catch (error) {
+    logger.error({ error, wallet }, 'Failed to create user execution service');
+    return null;
+  }
+}
 
 /**
  * Start buy flow - size selection
@@ -354,12 +398,28 @@ export async function executeOrderHandler(
   ctx.state.currentMenu = 'order_executing';
 
   const wallet = await ctx.getWallet();
-  if (!wallet || !ctx.execution) {
+  if (!wallet) {
     return {
       text: `❌ *Cannot Execute Order*
 
-${!wallet ? 'Wallet not connected.' : 'Trading service not available.'}`,
+Wallet not connected. Please connect your wallet first.`,
       buttons: [[mainMenuBtn()]],
+      parseMode: 'Markdown',
+    };
+  }
+
+  // Create execution service with USER'S credentials (not global)
+  const userExecution = await createUserExecutionService(ctx, wallet);
+  if (!userExecution) {
+    return {
+      text: `❌ *Cannot Execute Order*
+
+Your Polymarket credentials are not configured.
+Please add your API keys in settings.`,
+      buttons: [
+        [{ text: '⚙️ Add Credentials', url: 'https://app.clodds.com/settings' }],
+        [mainMenuBtn()],
+      ],
       parseMode: 'Markdown',
     };
   }
@@ -377,16 +437,18 @@ ${!wallet ? 'Wallet not connected.' : 'Trading service not available.'}`,
     const sharePrice = price || 0.5;
     const shares = size / sharePrice;
 
+    logger.info({ wallet, tokenId, size, shares, side, orderType, marketId }, 'Executing order with user credentials');
+
     if (orderType === 'market') {
       if (side === 'buy') {
-        result = await ctx.execution.marketBuy({
+        result = await userExecution.marketBuy({
           platform: 'polymarket',
           marketId,
           tokenId,
           size: shares,
         });
       } else {
-        result = await ctx.execution.marketSell({
+        result = await userExecution.marketSell({
           platform: 'polymarket',
           marketId,
           tokenId,
@@ -396,7 +458,7 @@ ${!wallet ? 'Wallet not connected.' : 'Trading service not available.'}`,
     } else {
       // Limit order
       if (side === 'buy') {
-        result = await ctx.execution.buyLimit({
+        result = await userExecution.buyLimit({
           platform: 'polymarket',
           marketId,
           tokenId,
@@ -405,7 +467,7 @@ ${!wallet ? 'Wallet not connected.' : 'Trading service not available.'}`,
           orderType: 'GTC',
         });
       } else {
-        result = await ctx.execution.sellLimit({
+        result = await userExecution.sellLimit({
           platform: 'polymarket',
           marketId,
           tokenId,

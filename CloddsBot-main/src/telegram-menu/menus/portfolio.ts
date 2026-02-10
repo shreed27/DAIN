@@ -7,8 +7,52 @@ import type { Position } from '../../types';
 import { formatUSD, formatPnL, formatPnLPct, formatCents, truncate } from '../utils/format';
 import { btn, paginationRow, mainMenuBtn, backBtn } from '../utils/keyboard';
 import { logger } from '../../utils/logger';
+import { createExecutionService, type ExecutionConfig, type ExecutionService } from '../../execution';
 
 const PAGE_SIZE = 5;
+
+interface PolymarketCredentials {
+  address: string;
+  apiKey: string;
+  apiSecret: string;
+  apiPassphrase: string;
+  privateKey: string;
+  funderAddress?: string;
+  signatureType?: number;
+}
+
+/**
+ * Create execution service for a specific user's wallet credentials
+ */
+async function createUserExecutionService(ctx: MenuContext, wallet: string): Promise<ExecutionService | null> {
+  try {
+    const polymarketCreds = await ctx.credentials.getCredentials<PolymarketCredentials>(wallet, 'polymarket');
+
+    if (!polymarketCreds) {
+      logger.warn({ wallet }, 'No Polymarket credentials found');
+      return null;
+    }
+
+    const execConfig: ExecutionConfig = {
+      polymarket: {
+        address: polymarketCreds.address,
+        apiKey: polymarketCreds.apiKey,
+        apiSecret: polymarketCreds.apiSecret,
+        apiPassphrase: polymarketCreds.apiPassphrase,
+        privateKey: polymarketCreds.privateKey,
+        funderAddress: polymarketCreds.funderAddress || polymarketCreds.address,
+        signatureType: polymarketCreds.signatureType,
+      },
+      maxOrderSize: 1000,
+      dryRun: false,
+    };
+
+    return createExecutionService(execConfig);
+  } catch (error) {
+    logger.error({ error, wallet }, 'Failed to create user execution service');
+    return null;
+  }
+}
 
 /**
  * Convert Position to PositionSummary
@@ -310,12 +354,28 @@ export async function executeClosePosition(
   const positionId = params[0];
 
   const wallet = await ctx.getWallet();
-  if (!wallet || !ctx.execution) {
+  if (!wallet) {
     return {
       text: `❌ *Cannot Close Position*
 
-${!wallet ? 'Wallet not connected.' : 'Trading service not available.'}`,
+Wallet not connected. Please connect your wallet first.`,
       buttons: [[mainMenuBtn()]],
+      parseMode: 'Markdown',
+    };
+  }
+
+  // Create execution service with USER'S credentials
+  const userExecution = await createUserExecutionService(ctx, wallet);
+  if (!userExecution) {
+    return {
+      text: `❌ *Cannot Close Position*
+
+Your Polymarket credentials are not configured.
+Please add your API keys in settings.`,
+      buttons: [
+        [{ text: '⚙️ Add Credentials', url: 'https://app.clodds.com/settings' }],
+        [mainMenuBtn()],
+      ],
       parseMode: 'Markdown',
     };
   }
@@ -332,8 +392,10 @@ ${!wallet ? 'Wallet not connected.' : 'Trading service not available.'}`,
   }
 
   try {
-    // Execute market sell
-    const result = await ctx.execution.marketSell({
+    logger.info({ wallet, positionId, shares: position.shares }, 'Closing position with user credentials');
+
+    // Execute market sell with USER'S execution service
+    const result = await userExecution.marketSell({
       platform: position.platform as any,
       marketId: position.marketId,
       tokenId: position.outcomeId,

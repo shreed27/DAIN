@@ -7,6 +7,50 @@ import type { Market } from '../../types';
 import { btn, mainMenuBtn } from '../utils/keyboard';
 import { formatCents, formatNumber, truncate } from '../utils/format';
 import { logger } from '../../utils/logger';
+import { createExecutionService, type ExecutionConfig, type ExecutionService } from '../../execution';
+
+interface PolymarketCredentials {
+  address: string;
+  apiKey: string;
+  apiSecret: string;
+  apiPassphrase: string;
+  privateKey: string;
+  funderAddress?: string;
+  signatureType?: number;
+}
+
+/**
+ * Create execution service for a specific user's wallet credentials
+ */
+async function createUserExecutionService(ctx: MenuContext, wallet: string): Promise<ExecutionService | null> {
+  try {
+    const polymarketCreds = await ctx.credentials.getCredentials<PolymarketCredentials>(wallet, 'polymarket');
+
+    if (!polymarketCreds) {
+      logger.warn({ wallet }, 'No Polymarket credentials found');
+      return null;
+    }
+
+    const execConfig: ExecutionConfig = {
+      polymarket: {
+        address: polymarketCreds.address,
+        apiKey: polymarketCreds.apiKey,
+        apiSecret: polymarketCreds.apiSecret,
+        apiPassphrase: polymarketCreds.apiPassphrase,
+        privateKey: polymarketCreds.privateKey,
+        funderAddress: polymarketCreds.funderAddress || polymarketCreds.address,
+        signatureType: polymarketCreds.signatureType,
+      },
+      maxOrderSize: 1000,
+      dryRun: false,
+    };
+
+    return createExecutionService(execConfig);
+  } catch (error) {
+    logger.error({ error, wallet }, 'Failed to create user execution service');
+    return null;
+  }
+}
 
 interface TradeOpportunity {
   rank: number;
@@ -190,6 +234,7 @@ Please try again.`,
 
 /**
  * Quick buy handler - instant execution from Find Trades
+ * Uses user's own Polymarket credentials for real execution
  */
 export async function quickBuyHandler(
   ctx: MenuContext,
@@ -206,12 +251,28 @@ export async function quickBuyHandler(
   ctx.state.orderType = 'market';
 
   const wallet = await ctx.getWallet();
-  if (!wallet || !ctx.execution) {
+  if (!wallet) {
     return {
       text: `❌ *Cannot Execute*
 
-${!wallet ? 'Wallet not connected.' : 'Trading service unavailable.'}`,
+Wallet not connected. Please connect your wallet first.`,
       buttons: [[mainMenuBtn()]],
+      parseMode: 'Markdown',
+    };
+  }
+
+  // Create execution service with USER'S credentials (not global)
+  const userExecution = await createUserExecutionService(ctx, wallet);
+  if (!userExecution) {
+    return {
+      text: `❌ *Cannot Execute*
+
+Your Polymarket credentials are not configured.
+Please add your API keys in settings.`,
+      buttons: [
+        [{ text: '⚙️ Add Credentials', url: 'https://app.clodds.com/settings' }],
+        [mainMenuBtn()],
+      ],
       parseMode: 'Markdown',
     };
   }
@@ -231,8 +292,10 @@ ${!wallet ? 'Wallet not connected.' : 'Trading service unavailable.'}`,
 
     const shares = size / price;
 
-    // Execute market buy
-    const result = await ctx.execution.marketBuy({
+    logger.info({ wallet, tokenId, size, shares, price, marketId }, 'Executing quick buy with user credentials');
+
+    // Execute market buy with USER'S execution service
+    const result = await userExecution.marketBuy({
       platform: 'polymarket',
       marketId,
       tokenId,

@@ -34,6 +34,7 @@ export interface CloddsBotRoutingResult {
 export interface CloddsBotRiskDecision {
   approved: boolean;
   adjustedSize?: number;
+  maxSize?: number;
   reason?: string;
   warnings: string[];
   regime: 'low' | 'elevated' | 'high' | 'extreme';
@@ -63,8 +64,10 @@ export interface AgentDexSwapResult {
   outputMint: string;
   inputAmount: string;
   outputAmount: string;
+  outAmount?: string;  // Alias for compatibility
   priceImpact: string;
   explorerUrl: string;
+  fees?: number;
 }
 
 export interface AgentDexPortfolio {
@@ -94,12 +97,18 @@ export interface GodWalletBuy {
   tokenSymbol: string;
   entryPrice: number;
   entryMarketCap: number;
+  marketCap?: number;
   amount: number;
   timestamp: number;
   txSignature: string;
+  walletAddress?: string;
+  walletLabel?: string;
+  walletConfidence?: number;
 }
 
-export interface WhaleSignal {
+// Note: WhaleSignal is defined in ../types/signal.ts
+// This is the internal adapter version for OpusX data
+export interface OpusXWhaleSignal {
   walletAddress: string;
   walletLabel?: string;
   token: string;
@@ -115,9 +124,11 @@ export interface WhaleSignal {
 export interface OpenClawTradeParams {
   symbol: string;
   side: 'buy' | 'sell';
-  amount: string;
+  amount?: string;
+  size?: number;
+  price?: number;
   leverage?: number;
-  exchange: 'hyperliquid' | 'binance' | 'bybit' | 'jupiter' | 'uniswap';
+  exchange: 'hyperliquid' | 'binance' | 'bybit' | 'jupiter' | 'uniswap' | 'drift';
 }
 
 export interface OpenClawTradeResult {
@@ -126,6 +137,7 @@ export interface OpenClawTradeResult {
   txSignature?: string;
   executedPrice?: number;
   executedAmount?: number;
+  fees?: number;
   error?: string;
 }
 
@@ -190,6 +202,7 @@ export interface ClawdnetAgent {
     price: string;
   }>;
   reputationScore: number;
+  reputation?: number;  // Alias
   status: 'online' | 'busy' | 'offline' | 'pending';
   trustLevel: 'open' | 'directory' | 'allowlist' | 'private';
 }
@@ -222,6 +235,7 @@ export interface A2AMessage {
 export interface X402PaymentRequest {
   amount: string;
   currency: string;
+  asset?: string;  // Alias for currency
   recipientAddress: string;
   chain: string;
   invoiceId?: string;

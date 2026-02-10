@@ -65,6 +65,11 @@ import {
   executeOrderHandler,
   handleCustomSizeInput,
 } from './menus/order-wizard';
+import {
+  findTradesHandler,
+  findTradesResultsHandler,
+  quickBuyHandler,
+} from './menus/find-trades';
 
 // =============================================================================
 // SERVICE FACTORY
@@ -207,6 +212,37 @@ export function createTelegramMenuService(
       // Market detail
       case 'market':
         return marketDetailHandler(ctx, params);
+
+      // Find Trades (AI-powered)
+      case 'find':
+        if (params[0] === 'trades') {
+          // First call shows loading, then auto-triggers results
+          const loadingResult = await findTradesHandler(ctx);
+          // Schedule results fetch (simulated delay for AI analysis)
+          setTimeout(async () => {
+            try {
+              const resultsResult = await findTradesResultsHandler(ctx);
+              if (ctx.state.messageId) {
+                await edit({
+                  platform: 'telegram',
+                  chatId: ctx.state.chatId,
+                  messageId: ctx.state.messageId,
+                  text: resultsResult.text,
+                  buttons: resultsResult.buttons,
+                  parseMode: resultsResult.parseMode || 'Markdown',
+                });
+              }
+            } catch (err) {
+              logger.error({ err }, 'Find trades results failed');
+            }
+          }, 3000);
+          return loadingResult;
+        }
+        return mainMenuHandler(ctx);
+
+      // Quick buy from Find Trades
+      case 'quickbuy':
+        return quickBuyHandler(ctx, params);
 
       // Trading - Buy
       case 'buy':

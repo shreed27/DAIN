@@ -104,6 +104,9 @@ export function paginationRow(opts: PaginationOptions): MessageButton[] {
 export function mainMenuButtons(): MessageButton[][] {
   return [
     [
+      btn('🔍 Find Trades', 'find:trades'),
+    ],
+    [
       btn('📊 Portfolio', 'menu:portfolio'),
       btn('📋 Orders', 'menu:orders'),
       btn('💰 Wallet', 'menu:wallet'),

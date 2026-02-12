@@ -122,6 +122,41 @@ export class AgentDexAdapter extends EventEmitter {
     }
   }
 
+  /**
+   * Get swap transaction for frontend signing
+   * Returns a serialized transaction that the user can sign with their wallet
+   */
+  async getSwapTransaction(params: {
+    quote: AgentDexQuote;
+    userPublicKey: string;
+    slippageBps?: number;
+  }): Promise<string | null> {
+    try {
+      // Call Jupiter API directly to get the swap transaction
+      // This returns a base64-encoded transaction that the frontend can deserialize and sign
+      const response = await axios.post(
+        'https://quote-api.jup.ag/v6/swap',
+        {
+          quoteResponse: params.quote,
+          userPublicKey: params.userPublicKey,
+          wrapAndUnwrapSol: true,
+          dynamicComputeUnitLimit: true,
+          dynamicSlippage: { minBps: 50, maxBps: params.slippageBps || 300 },
+        },
+        {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: this.config.timeout,
+        }
+      );
+
+      return response.data.swapTransaction || null;
+    } catch (error) {
+      console.error('Failed to get swap transaction:', error);
+      // Return null instead of throwing - the frontend will handle this gracefully
+      return null;
+    }
+  }
+
   // ==================== Limit Orders ====================
 
   /**

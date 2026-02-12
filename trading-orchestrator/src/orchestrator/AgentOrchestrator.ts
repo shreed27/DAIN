@@ -74,6 +74,33 @@ export interface OrchestratorAdapters {
     cloddsBot?: CloddsBotAdapter;
 }
 
+/**
+ * Health status for an individual adapter
+ */
+export interface AdapterHealth {
+    name: string;
+    healthy: boolean;
+    latency?: number;
+    error?: string;
+    lastChecked: number;
+}
+
+/**
+ * Aggregated health report for all adapters
+ */
+export interface HealthReport {
+    healthy: boolean;
+    timestamp: number;
+    adapters: Record<string, AdapterHealth>;
+    summary: {
+        total: number;
+        healthy: number;
+        unhealthy: number;
+        configured: string[];
+        missing: string[];
+    };
+}
+
 export class AgentOrchestrator extends EventEmitter {
     private agents: Map<string, AgentConfig> = new Map();
     private positions: Map<string, Position[]> = new Map();
@@ -1445,33 +1472,6 @@ export class AgentOrchestrator extends EventEmitter {
     // ============================================================================
 
     /**
-     * Health status for an individual adapter
-     */
-    interface AdapterHealth {
-        name: string;
-        healthy: boolean;
-        latency?: number;
-        error?: string;
-        lastChecked: number;
-    }
-
-    /**
-     * Aggregated health report for all adapters
-     */
-    interface HealthReport {
-        healthy: boolean;
-        timestamp: number;
-        adapters: Record<string, AdapterHealth>;
-        summary: {
-            total: number;
-            healthy: number;
-            unhealthy: number;
-            configured: string[];
-            missing: string[];
-        };
-    }
-
-    /**
      * Check health of all configured adapters
      */
     async healthCheckAll(): Promise<HealthReport> {
@@ -1642,13 +1642,6 @@ export class AgentOrchestrator extends EventEmitter {
             timestamp: Date.now(),
             data: { previousStatus: agent.status, newStatus: status },
         });
-    }
-
-    /**
-     * Set adapters (for runtime configuration)
-     */
-    setAdapters(adapters: Partial<OrchestratorAdapters>): void {
-        this.adapters = { ...this.adapters, ...adapters };
     }
 
     // Private helper methods

@@ -63,5 +63,6 @@ export enum EventType {
     PositionClosed = 'position_closed',
     RiskLimitTriggered = 'risk_limit_triggered',
     AgentPaused = 'agent_paused',
-    AgentResumed = 'agent_resumed'
+    AgentResumed = 'agent_resumed',
+    StatusChanged = 'status_changed'
 }

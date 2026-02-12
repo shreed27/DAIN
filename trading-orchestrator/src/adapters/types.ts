@@ -9,8 +9,10 @@ export interface AdapterConfig {
 export interface AdapterHealth {
   healthy: boolean;
   latencyMs?: number;
+  latency?: number;  // Alias for latencyMs
   lastChecked: number;
   error?: string;
+  metadata?: Record<string, unknown>;
 }
 
 // CloddsBot Types
@@ -149,6 +151,15 @@ export interface SurvivalStatus {
   startBalance: number;
   currentBalance: number;
   x402BudgetUnlocked: boolean;
+  // Extended survival parameters
+  riskParams?: {
+    maxPositionSizePercent?: number;
+    maxLeverage?: number;
+    stopLossPercent?: number;
+  };
+  canOpenPosition?: boolean;
+  maxPositionSize?: number;
+  maxLeverage?: number;
 }
 
 // OsintMarket Types

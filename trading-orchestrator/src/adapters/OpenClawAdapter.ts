@@ -153,7 +153,7 @@ export class OpenClawAdapter extends EventEmitter {
         };
 
         // Emit mode change event
-        if (previousMode !== this.survivalStatus.mode) {
+        if (this.survivalStatus && previousMode !== this.survivalStatus.mode) {
           this.emit('survival_mode_changed', {
             previousMode,
             newMode: this.survivalStatus.mode,
@@ -168,7 +168,7 @@ export class OpenClawAdapter extends EventEmitter {
           }
         }
 
-        return this.survivalStatus;
+        return this.survivalStatus!;
       }
     } catch (error) {
       console.error('[OpenClawAdapter] Failed to update survival status on server:', error);
@@ -488,6 +488,7 @@ export class OpenClawAdapter extends EventEmitter {
     remainingBudget: number;
     dailyLimit: number;
     dailySpent: number;
+    walletAddress?: string;
   } | null> {
     try {
       const response = await this.client.get('/api/x402/status');

@@ -125,10 +125,11 @@ export class ClawdnetAdapter extends EventEmitter {
         transport: http(this.config.rpcUrl),
       });
 
+      // Type assertion to handle viem version differences
       this.publicClient = createPublicClient({
         chain: base,
         transport: http(this.config.rpcUrl),
-      });
+      }) as any;
 
       this.walletAddress = this.account.address;
       console.log(`[ClawdnetAdapter] Wallet initialized: ${this.walletAddress}`);

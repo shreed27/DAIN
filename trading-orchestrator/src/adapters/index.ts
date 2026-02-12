@@ -7,6 +7,7 @@ export { OpusXAdapter } from './OpusXAdapter.js';
 export { OpenClawAdapter } from './OpenClawAdapter.js';
 export { OsintMarketAdapter } from './OsintMarketAdapter.js';
 export { ClawdnetAdapter } from './ClawdnetAdapter.js';
+export { SidexAdapter } from './SidexAdapter.js';
 
 // Re-export types
 export * from './types.js';

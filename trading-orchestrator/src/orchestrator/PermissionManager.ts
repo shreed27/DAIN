@@ -38,6 +38,24 @@ export class PermissionManager {
     }
 
     /**
+     * Get permissions by wallet address
+     */
+    getPermissions(walletAddress: string): WalletPermission[] {
+        return Array.from(this.permissions.values()).filter(
+            p => p.walletAddress === walletAddress
+        );
+    }
+
+    /**
+     * Set/update permissions for a wallet
+     */
+    setPermissions(walletAddress: string, permission: WalletPermission): void {
+        // Ensure walletAddress is set
+        permission.walletAddress = walletAddress;
+        this.permissions.set(permission.id, permission);
+    }
+
+    /**
      * Check if a trade intent is permitted
      */
     checkPermission(permissionIdOrIntent: string | TradeIntent, permissionOrAction?: WalletPermission | { type: string; value: number }): PermissionCheck | boolean {

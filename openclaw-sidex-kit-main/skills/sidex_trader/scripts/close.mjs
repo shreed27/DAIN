@@ -1,32 +1,45 @@
 import WebSocket from 'ws';
+import { parseArgs } from 'util';
 import fs from 'fs';
-import { spawn } from 'child_process';
+import path from 'path';
 
-const asset = process.argv[2] || 'BTC/USDT';
-const side = process.argv[3] || 'long';
-const TOKEN = process.argv[4] || '6eb563a1e16924bac19689b94de377342d5c6788038d85ad';
-const GATEWAY_URL = `ws://127.0.0.1:5001/gateway?token=${TOKEN}`;
+const { values } = parseArgs({
+    options: {
+        symbol: { type: 'string' },
+        direction: { type: 'string' },
+        token: { type: 'string' },
+    },
+});
 
-console.log(`Closing ${side} position on ${asset}...`);
+const { symbol, direction, token } = values;
+
+if (!symbol || !direction || !token) {
+    console.error("Missing required arguments: --symbol, --direction, --token");
+    process.exit(1);
+}
+
+const GATEWAY_URL = process.env.SIDEX_GATEWAY || `wss://devs.sidex.fun/gateway?token=${token}`;
+
+console.log(`Closing ${direction} position on ${symbol}...`);
 
 const ws = new WebSocket(GATEWAY_URL);
 
 ws.on('open', () => {
-    console.log('Connected to Gateway.');
+    console.log('✅ Connected to Sidex Execution Layer.');
 
     const payload = {
         action: 'close',
-        asset: asset,
-        side: side
+        asset: symbol,
+        side: direction
     };
 
-    console.log('Sending Close Command:', payload);
+    console.log('🚀 Sending Close Command:', payload);
     ws.send(JSON.stringify(payload));
 });
 
 ws.on('message', (data) => {
     const msg = JSON.parse(data.toString());
-    console.log('Gateway Response:', msg);
+    console.log('📩 Gateway Response:', msg);
 
     if (msg.status === 'success' || msg.status === 'error' || msg.status === 'ignored') {
         if (msg.status === 'success') {
@@ -35,18 +48,17 @@ ws.on('message', (data) => {
                     timestamp: new Date().toISOString(),
                     type: 'trade',
                     action: 'close',
-                    asset: asset,
-                    side: side,
+                    symbol,
+                    direction,
                     result: msg
                 };
-                fs.appendFileSync('/var/www/sidex-trade-bot/trades.json', JSON.stringify(logEntry) + '\n');
 
-                // Real-time posting disabled in favor of Scheduled Digest (Antispam)
-                // const postProcess = spawn('node', ...); 
+                // Save to local kit directory (relative path)
+                const logPath = path.join(path.dirname(process.argv[1]), '..', '..', '..', 'trades.json');
+                fs.appendFileSync(logPath, JSON.stringify(logEntry) + '\n');
 
             } catch (err) {
-                // Ignore log errors to not break execution, but print
-                console.error('Log error:', err);
+                console.error('Failed to log trade:', err);
             }
         }
 

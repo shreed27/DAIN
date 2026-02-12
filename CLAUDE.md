@@ -8,8 +8,8 @@ This is a **7-project integrated platform** for autonomous AI trading across pre
 |------|---------|-------------|
 | **agent-dex-main** | Solana DEX API for AI agents | Jupiter V6, limit orders |
 | **AgentHub-Repo** | Orchestration core & types | Permission system, lifecycle |
-| **clawdnet-main** | A2A protocol + X402 payments | Agents pay agents |
-| **CloddsBot-main** | 103-skill trading terminal | Real order execution |
+| **clawdnet-main** | A2A protocol + X402 payments | 🚧 *Coming Soon* |
+| **CloddsBot-main** | Comprehensive trading terminal | Real order execution |
 | **openclaw-sidex-kit** | Multi-exchange + Survival Mode | Adaptive risk management |
 | **trading-orchestrator** | Central coordination hub | 6 adapters, kill switch |
 | **trading-frontend** | Next.js dashboard | 25 pages, real-time |
@@ -33,7 +33,7 @@ This is a **7-project integrated platform** for autonomous AI trading across pre
         │                      │                      │
 ┌───────▼───────┐    ┌─────────▼─────────┐    ┌──────▼──────┐
 │  CLODDSBOT    │    │   AGENT-DEX       │    │  OPENCLAW   │
-│  (103 skills) │    │   (Solana DEX)    │    │  (Futures)  │
+│  (25+ feats)  │    │   (Solana DEX)    │    │  (Futures)  │
 │  - 16 Feeds   │    │   - Jupiter V6    │    │  - Survival │
 │  - Copy Trade │    │   - Limit Orders  │    │  - X402     │
 │  - Execution  │    │   - Portfolio     │    │  - 5 Exch.  │
@@ -42,7 +42,7 @@ This is a **7-project integrated platform** for autonomous AI trading across pre
         └──────────────────────┼──────────────────────┘
                                │
 ┌──────────────────────────────▼──────────────────────────────────────┐
-│                        CLAWDNET                                      │
+│                   CLAWDNET (Coming Soon)                             │
 │              A2A Protocol │ X402 Payments │ Agent Registry           │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
@@ -174,10 +174,10 @@ clawdnet agents    # List network agents
 
 **Location:** `/CloddsBot-main/`
 
-**Purpose:** 103-skill multi-platform trading assistant
+**Purpose:** Multi-platform trading assistant with 25+ user-facing features
 
 ### Key Files
-- `/src/skills/executor.ts` - 103 skills registry
+- `/src/skills/executor.ts` - Skills registry (25+ features + infrastructure modules)
 - `/src/telegram-menu/` - Interactive Telegram UI
 - `/src/trading/copy-trading-orchestrator.ts` - Copy trading engine
 - `/src/execution/index.ts` - Order execution (EIP-712)
@@ -186,16 +186,16 @@ clawdnet agents    # List network agents
 - `/src/pairing/index.ts` - Wallet-to-chat linking
 - `/src/db/index.ts` - SQLite (17+ tables)
 
-### 103 Bundled Skills
-Trading: arbitrage, backtest, trading-polymarket, trading-kalshi, trading-manifold, trading-solana, trading-evm, trading-futures, copy-trading, pump-swarm, hyperliquid, drift, jupiter, raydium, orca, meteora
+### 25+ Trading Features (Key Skill Categories)
+**Trading:** arbitrage, backtest, trading-polymarket, trading-kalshi, trading-manifold, trading-solana, trading-evm, trading-futures, copy-trading, pump-swarm, hyperliquid, drift, jupiter, raydium, orca, meteora
 
-Analytics: analytics, portfolio, positions, risk, metrics, signals, whale-tracking
+**Analytics:** analytics, portfolio, positions, risk, metrics, signals, whale-tracking
 
-Automation: alerts, automation, triggers, webhooks
+**Automation:** alerts, automation, triggers, webhooks
 
-Data: feeds, news, weather, embeddings, market-index, markets
+**Data:** feeds, news, weather, embeddings, market-index, markets
 
-Infrastructure: credentials, pairing, execution, routing, mev, sessions
+**Infrastructure:** credentials, pairing, execution, routing, mev, sessions
 
 ### 16 Market Feeds
 Polymarket, Kalshi, Manifold, Metaculus, PredictIt, Drift, Betfair, Smarkets, Opinion, Virtuals, PredictFun, Hedgehog, News, External, Weather
@@ -413,7 +413,7 @@ Signal arrives (Whale, AI, OSINT, Arbitrage)
 ### Unique Capabilities
 1. **Survival Mode** - Adaptive risk based on P&L health
 2. **X402 Protocol** - Agents pay each other autonomously
-3. **103 Skills** - Most comprehensive skill library
+3. **25+ Trading Features** - Comprehensive feature set
 4. **A2A Network** - Agent discovery and collaboration
 5. **ERC-8004** - On-chain agent identity
 6. **Copy Trading** - Real-time whale replication
@@ -611,8 +611,8 @@ pnpm tsc --noEmit  # See all errors
   Lines of Real Code: Docs + Contracts                                                     
   Status: REAL ✅                                                                          
   ────────────────────────────────────────                                                 
-  Repo: CloddsBot-main                                                                     
-  What It Is: 103-skill trading terminal                                                   
+  Repo: CloddsBot-main
+  What It Is: 25+ feature trading terminal
   Lines of Real Code: ~50,000+                                                             
   Status: REAL ✅                                                                          
   ────────────────────────────────────────                                                 

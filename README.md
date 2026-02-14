@@ -73,7 +73,7 @@ npm run dev
 # API:      http://localhost:4000
 ```
 
-### Option 3: Frontend Only (Demo Mode)
+### Option 3: Frontend Only 
 
 ```bash
 cd trading-frontend
